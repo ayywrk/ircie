@@ -5,5 +5,5 @@ use std::{
 
 #[derive(Default)]
 pub struct Factory {
-    pub(crate) resources: HashMap<TypeId, Box<dyn Any>>,
+    pub(crate) resources: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
 }

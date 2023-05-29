@@ -1,85 +1,142 @@
-use std::time::Duration;
-
 use log::{debug, info, warn};
+use std::time::Duration;
 
 use crate::{Irc, IrcPrefix};
 
 impl Irc {
-    pub(crate) fn event_ping(&mut self, ping_token: &str) {
+    pub(crate) async fn event_ping(&mut self, ping_token: &str) {
         debug!("PING {}", ping_token);
-        self.queue(&format!("PONG {}", ping_token));
+
+        self.context
+            .write()
+            .await
+            .queue(&format!("PONG {}", ping_token));
     }
 
-    pub(crate) fn event_welcome(&mut self, welcome_msg: &str) {
+    pub(crate) async fn event_welcome(&mut self, welcome_msg: &str) {
         debug!("{welcome_msg}");
-        // self.identify();
-        self.join_config_channels();
+        let mut context = self.context.write().await;
+        context.identify();
+        context.join_config_channels();
     }
 
-    pub(crate) fn event_nicknameinuse(&mut self) {
-        let new_nick = &format!("{}_", &self.config.nick);
+    pub(crate) async fn event_nicknameinuse(&mut self) {
+        let mut context = self.context.write().await;
+        let new_nick = &format!("{}_", &context.config.nick);
         warn!("Nick already in use., switching to {}", new_nick);
-        self.update_nick(new_nick)
+        context.update_nick(new_nick)
     }
 
-    pub(crate) fn event_kick(&mut self, channel: &str, nick: &str, kicker: &str, reason: &str) {
-        if nick != &self.config.nick {
+    pub(crate) async fn event_kick(
+        &mut self,
+        channel: &str,
+        nick: &str,
+        kicker: &str,
+        reason: &str,
+    ) {
+        let mut context = self.context.write().await;
+        if nick != &context.config.nick {
             return;
         }
 
         warn!("We got kicked from {} by {}! ({})", channel, kicker, reason);
-        self.join(channel);
+        context.join(channel);
     }
 
     pub(crate) async fn event_quit<'a>(&mut self, prefix: &'a IrcPrefix<'a>) {
-        if prefix.nick != self.config.nick {
+        if prefix.nick != self.context.read().await.config.nick {
             return;
         }
 
         warn!("We quit. We'll reconnect in {} seconds.", 15);
         std::thread::sleep(Duration::from_secs(15));
         self.connect().await.unwrap();
-        self.register();
     }
 
-    pub(crate) fn event_invite(&mut self, prefix: &IrcPrefix, channel: &str) {
+    pub(crate) async fn event_invite<'a>(&mut self, prefix: &'a IrcPrefix<'a>, channel: &str) {
         info!("{} invited us to {}", prefix.nick, channel);
-        self.join(channel);
+        self.context.write().await.join(channel);
     }
 
-    pub(crate) fn event_notice(
+    pub(crate) async fn event_notice<'a>(
         &mut self,
-        prefix: Option<&IrcPrefix>,
+        _prefix: Option<&IrcPrefix<'a>>,
         channel: &str,
         message: &str,
     ) {
-        //TODO, register shit
+        let mut context = self.context.write().await;
+
+        if channel == &context.config.nick {
+            if message.ends_with(&format!(
+                "\x02{}\x02 isn't registered.",
+                context.config.nick
+            )) {
+                let nickserv_pass = context.config.nickserv_pass.as_ref().unwrap().to_string();
+                let nickserv_email = context.config.nickserv_email.as_ref().unwrap().to_string();
+                info!("Registering to nickserv now.");
+                context.privmsg(
+                    "NickServ",
+                    &format!("REGISTER {} {}", nickserv_pass, nickserv_email),
+                );
+            }
+            if message.ends_with(" seconds to register.") {
+                let seconds = message
+                    .split_whitespace()
+                    .nth(10)
+                    .unwrap()
+                    .parse::<usize>()
+                    .unwrap()
+                    + 1;
+
+                info!("Waiting {} seconds to register.", seconds);
+                let ctx_clone = self.context.clone();
+
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(seconds as u64)).await;
+                    ctx_clone.write().await.identify();
+                });
+            }
+        }
     }
 
-    pub(crate) fn event_privmsg(&mut self, prefix: &IrcPrefix, channel: &str, message: &str) {
-        if !message.starts_with(&self.config.cmdkey) {
+    pub(crate) async fn event_privmsg<'a>(
+        &mut self,
+        prefix: &'a IrcPrefix<'a>,
+        channel: &str,
+        message: &str,
+    ) {
+        let sys_name;
+        {
+            let context = self.context.read().await;
+            if !message.starts_with(&context.config.cmdkey) {
+                return;
+            }
+            let mut elements = message.split_whitespace();
+            sys_name = elements.next().unwrap()[1..].to_owned();
+
+            if context.is_owner(prefix) && sys_name == "raw" {
+                let mut context = self.context.write().await;
+                context.queue(&elements.collect::<Vec<_>>().join(" "));
+                return;
+            }
+        }
+
+        if self.is_flood(channel).await {
             return;
         }
-        let mut elements = message.split_whitespace();
-        let sys_name = &elements.next().unwrap()[1..];
 
-        if self.is_owner(prefix) && sys_name == "raw" {
-            self.queue(&elements.collect::<Vec<_>>().join(" "));
-            return;
-        }
+        //TODO:
+        // MOVE RUN_SYSTEM BACK TO IRC
 
-        if self.is_flood(channel) {
-            return;
-        }
-
-        let response = self.run_system(prefix, sys_name);
+        let mut context = self.context.write().await;
+        let response = context.run_system(prefix, &sys_name);
 
         if response.0.is_none() {
             return;
         }
 
         for line in response.0.unwrap() {
-            self.privmsg(channel, &line)
+            context.privmsg(channel, &line)
         }
     }
 }

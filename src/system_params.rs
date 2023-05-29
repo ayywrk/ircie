@@ -74,7 +74,7 @@ impl<'res, T: 'static> SystemParam for ResMut<'res, T> {
     type Item<'new> = ResMut<'new, T>;
 
     fn retrieve<'r>(_prefix: &'r IrcPrefix, factory: &'r Factory) -> Self::Item<'r> {
-        let const_ptr = &factory.resources as *const HashMap<TypeId, Box<dyn Any>>;
+        let const_ptr = &factory.resources as *const HashMap<TypeId, Box<dyn Any + Send + Sync>>;
         let mut_ptr = const_ptr as *mut HashMap<TypeId, Box<dyn Any>>;
         let res_mut = unsafe { &mut *mut_ptr };
 

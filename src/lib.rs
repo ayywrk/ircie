@@ -3,6 +3,7 @@ pub mod factory;
 pub mod irc_command;
 pub mod system;
 pub mod system_params;
+pub mod utils;
 
 use std::{
     any::TypeId,
@@ -10,6 +11,7 @@ use std::{
     io::ErrorKind,
     net::ToSocketAddrs,
     path::Path,
+    sync::Arc,
     time::SystemTime,
 };
 
@@ -23,6 +25,7 @@ use tokio::{
     fs::File,
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
+    sync::RwLock,
 };
 
 pub(crate) const MAX_MSG_LEN: usize = 512;
@@ -67,7 +70,6 @@ impl Default for FloodControl {
 
 #[derive(Clone, Debug, Default)]
 pub struct IrcPrefix<'a> {
-    pub admin: bool,
     pub nick: &'a str,
     pub user: Option<&'a str>,
     pub host: Option<&'a str>,
@@ -101,7 +103,6 @@ impl<'a> From<&'a str> for IrcPrefix<'a> {
         }
 
         Self {
-            admin: false,
             nick: nick,
             user: Some(user),
             host: Some(user_split[1]),
@@ -146,164 +147,35 @@ pub struct IrcConfig {
     nick: String,
     user: String,
     real: String,
-    nickserv_pass: String,
-    nickserv_email: String,
+    nickserv_pass: Option<String>,
+    nickserv_email: Option<String>,
     cmdkey: String,
     flood_interval: f32,
     owner: String,
     admins: Vec<String>,
 }
 
-pub struct Irc {
+// TODO:
+/*
+   split Irc into two structs, one for the context, which is Send + Sync to be usable in tasks
+   one for the comms.
+
+*/
+
+pub struct Context {
     config: IrcConfig,
-    stream: Stream,
+    identified: bool,
+    send_queue: VecDeque<String>,
 
     systems: HashMap<String, StoredSystem>,
     factory: Factory,
-
-    flood_controls: HashMap<String, FloodControl>,
-
-    send_queue: VecDeque<String>,
-    recv_queue: VecDeque<String>,
-    partial_line: String,
 }
 
-impl Irc {
-    pub async fn from_config(path: impl AsRef<Path>) -> std::io::Result<Self> {
-        let mut file = File::open(path).await?;
-        let mut contents = String::new();
-        file.read_to_string(&mut contents).await?;
-
-        let config: IrcConfig = serde_yaml::from_str(&contents).unwrap();
-
-        Ok(Self {
-            config,
-            stream: Stream::None,
-            systems: HashMap::default(),
-            factory: Factory::default(),
-            flood_controls: HashMap::default(),
-            send_queue: VecDeque::new(),
-            recv_queue: VecDeque::new(),
-            partial_line: String::new(),
-        })
+impl Context {
+    pub fn privmsg(&mut self, channel: &str, message: &str) {
+        debug!("sending privmsg to {} : {}", channel, message);
+        self.queue(&format!("PRIVMSG {} :{}", channel, message));
     }
-
-    pub fn add_system<I, S: for<'a> System<'a> + 'static>(
-        &mut self,
-        name: &str,
-        system: impl for<'a> IntoSystem<'a, I, System = S>,
-    ) -> &mut Self {
-        self.systems
-            .insert(name.to_owned(), Box::new(system.into_system()));
-        self
-    }
-
-    pub fn add_resource<R: 'static>(&mut self, res: R) -> &mut Self {
-        self.factory
-            .resources
-            .insert(TypeId::of::<R>(), Box::new(res));
-        self
-    }
-
-    pub fn run_system<'a>(&mut self, prefix: &'a IrcPrefix, name: &str) -> Response {
-        let system = self.systems.get_mut(name).unwrap();
-        system.run(prefix, &mut self.factory)
-    }
-
-    pub async fn connect(&mut self) -> std::io::Result<()> {
-        let domain = format!("{}:{}", self.config.host, self.config.port);
-
-        info!("Connecting to {}", domain);
-
-        let mut addrs = domain
-            .to_socket_addrs()
-            .expect("Unable to get addrs from domain {domain}");
-
-        let sock = addrs
-            .next()
-            .expect("Unable to get ip from addrs: {addrs:?}");
-
-        let plain_stream = TcpStream::connect(sock).await?;
-
-        if self.config.ssl {
-            let stream = async_native_tls::connect(self.config.host.clone(), plain_stream)
-                .await
-                .unwrap();
-            self.stream = Stream::Tls(stream);
-            return Ok(());
-        }
-
-        self.stream = Stream::Plain(plain_stream);
-        Ok(())
-    }
-
-    pub fn register(&mut self) {
-        info!(
-            "Registering as {}!{} ({})",
-            self.config.nick, self.config.user, self.config.real
-        );
-        self.queue(&format!(
-            "USER {} 0 * {}",
-            self.config.user, self.config.real
-        ));
-        self.queue(&format!("NICK {}", self.config.nick));
-    }
-
-    async fn recv(&mut self) -> std::io::Result<()> {
-        let mut buf = [0; MAX_MSG_LEN];
-
-        let bytes_read = match self.stream.read(&mut buf).await {
-            Ok(bytes_read) => bytes_read,
-            Err(err) => match err.kind() {
-                ErrorKind::WouldBlock => {
-                    return Ok(());
-                }
-                _ => panic!("{err}"),
-            },
-        };
-
-        if bytes_read == 0 {
-            return Ok(());
-        }
-
-        let buf = &buf[..bytes_read];
-
-        self.partial_line += String::from_utf8_lossy(buf).into_owned().as_str();
-        let new_lines: Vec<&str> = self.partial_line.split("\r\n").collect();
-        let len = new_lines.len();
-
-        for (index, line) in new_lines.into_iter().enumerate() {
-            if index == len - 1 && &buf[buf.len() - 3..] != b"\r\n" {
-                self.partial_line = line.to_owned();
-                break;
-            }
-            self.recv_queue.push_back(line.to_owned());
-        }
-        Ok(())
-    }
-
-    async fn send(&mut self) -> std::io::Result<()> {
-        while self.send_queue.len() > 0 {
-            let msg = self.send_queue.pop_front().unwrap();
-
-            trace!(">> {}", msg.replace("\r\n", ""));
-            let bytes_written = match self.stream.write(msg.as_bytes()).await {
-                Ok(bytes_written) => bytes_written,
-                Err(err) => match err.kind() {
-                    ErrorKind::WouldBlock => {
-                        return Ok(());
-                    }
-                    _ => panic!("{err}"),
-                },
-            };
-
-            if bytes_written < msg.len() {
-                self.send_queue.push_front(msg[bytes_written..].to_owned());
-            }
-        }
-        Ok(())
-    }
-
     fn queue(&mut self, msg: &str) {
         let mut msg = msg.replace("\r", "").replace("\n", "");
 
@@ -324,39 +196,27 @@ impl Irc {
         }
     }
 
-    pub async fn update(&mut self) -> std::io::Result<()> {
-        self.recv().await?;
-        self.handle_commands().await;
-        self.send().await?;
-        Ok(())
+    pub fn identify(&mut self) {
+        if self.config.nickserv_pass.is_none() || self.identified {
+            return;
+        }
+
+        self.privmsg(
+            "NickServ",
+            &format!("IDENTIFY {}", self.config.nickserv_pass.as_ref().unwrap()),
+        );
     }
 
-    pub async fn handle_commands(&mut self) {
-        while self.recv_queue.len() != 0 {
-            let owned_line = self.recv_queue.pop_front().unwrap();
-            let line = owned_line.as_str();
-
-            trace!("<< {:?}", line);
-
-            let mut message: IrcMessage = line.into();
-
-            let Some(prefix) = &mut message.prefix else {
-                return self.handle_message(&message).await;
-            };
-
-            if self.is_owner(prefix) {
-                prefix.admin = true;
-            } else {
-                for admin in &self.config.admins {
-                    if self.is_admin(prefix, admin) {
-                        prefix.admin = true;
-                        break;
-                    }
-                }
-            }
-
-            self.handle_message(&message).await;
-        }
+    pub fn register(&mut self) {
+        info!(
+            "Registering as {}!{} ({})",
+            self.config.nick, self.config.user, self.config.real
+        );
+        self.queue(&format!(
+            "USER {} 0 * {}",
+            self.config.user, self.config.real
+        ));
+        self.queue(&format!("NICK {}", self.config.nick));
     }
 
     fn is_owner(&self, prefix: &IrcPrefix) -> bool {
@@ -396,7 +256,122 @@ impl Irc {
         self.queue(&format!("NICK {}", self.config.nick));
     }
 
-    fn is_flood(&mut self, channel: &str) -> bool {
+    pub fn privmsg_all(&mut self, message: &str) {
+        for i in 0..self.config.channels.len() {
+            let channel = self.config.channels.iter().nth(i).unwrap();
+            debug!("sending privmsg to {} : {}", channel, message);
+            self.queue(&format!("PRIVMSG {} :{}", channel, message));
+        }
+    }
+
+    pub fn add_system<I, S: for<'a> System<'a> + Send + Sync + 'static>(
+        &mut self,
+        name: &str,
+        system: impl for<'a> IntoSystem<'a, I, System = S>,
+    ) -> &mut Self {
+        self.systems
+            .insert(name.to_owned(), Box::new(system.into_system()));
+        self
+    }
+
+    pub fn add_resource<R: Send + Sync + 'static>(&mut self, res: R) -> &mut Self {
+        self.factory
+            .resources
+            .insert(TypeId::of::<R>(), Box::new(res));
+        self
+    }
+
+    pub fn run_system<'a>(&mut self, prefix: &'a IrcPrefix, name: &str) -> Response {
+        let system = self.systems.get_mut(name).unwrap();
+        system.run(prefix, &mut self.factory)
+    }
+}
+
+pub struct Irc {
+    context: Arc<RwLock<Context>>,
+    recv_queue: VecDeque<String>,
+    flood_controls: HashMap<String, FloodControl>,
+    stream: Stream,
+    partial_line: String,
+}
+
+impl Irc {
+    pub async fn from_config(path: impl AsRef<Path>) -> std::io::Result<Self> {
+        let mut file = File::open(path).await?;
+        let mut contents = String::new();
+        file.read_to_string(&mut contents).await?;
+
+        let config: IrcConfig = serde_yaml::from_str(&contents).unwrap();
+
+        let context = Arc::new(RwLock::new(Context {
+            config,
+            identified: false,
+            send_queue: VecDeque::new(),
+            systems: HashMap::default(),
+            factory: Factory::default(),
+        }));
+
+        Ok(Self {
+            context,
+            stream: Stream::None,
+            recv_queue: VecDeque::new(),
+            flood_controls: HashMap::default(),
+            partial_line: String::new(),
+        })
+    }
+
+    pub async fn add_system<I, S: for<'a> System<'a> + Send + Sync + 'static>(
+        &mut self,
+        name: &str,
+        system: impl for<'a> IntoSystem<'a, I, System = S>,
+    ) -> &mut Self {
+        {
+            let mut context = self.context.write().await;
+            context.add_system(name, system);
+        }
+        self
+    }
+
+    pub async fn add_resource<R: Send + Sync + 'static>(&mut self, res: R) -> &mut Self {
+        {
+            let mut context = self.context.write().await;
+            context.add_resource(res);
+        }
+        self
+    }
+
+    pub async fn connect(&mut self) -> std::io::Result<()> {
+        let mut context = self.context.write().await;
+
+        let domain = format!("{}:{}", context.config.host, context.config.port);
+
+        info!("Connecting to {}", domain);
+
+        let mut addrs = domain
+            .to_socket_addrs()
+            .expect("Unable to get addrs from domain {domain}");
+
+        let sock = addrs
+            .next()
+            .expect("Unable to get ip from addrs: {addrs:?}");
+
+        let plain_stream = TcpStream::connect(sock).await?;
+
+        if context.config.ssl {
+            let stream = async_native_tls::connect(context.config.host.clone(), plain_stream)
+                .await
+                .unwrap();
+            self.stream = Stream::Tls(stream);
+            context.register();
+            return Ok(());
+        }
+
+        self.stream = Stream::Plain(plain_stream);
+        context.register();
+        Ok(())
+    }
+
+    async fn is_flood(&mut self, channel: &str) -> bool {
         let mut flood_control = match self.flood_controls.entry(channel.to_owned()) {
             std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
             std::collections::hash_map::Entry::Vacant(v) => {
@@ -409,7 +384,8 @@ impl Irc {
 
         let elapsed = flood_control.last_cmd.elapsed().unwrap();
 
-        if elapsed.as_secs_f32() < self.config.flood_interval {
+
+        if elapsed.as_secs_f32() < self.context.read().await.config.flood_interval {
             warn!("they be floodin @ {channel}!");
             return true;
         }
@@ -418,46 +394,127 @@ impl Irc {
         false
     }
 
-    pub fn privmsg(&mut self, channel: &str, message: &str) {
-        debug!("sending privmsg to {} : {}", channel, message);
-        self.queue(&format!("PRIVMSG {} :{}", channel, message));
+    async fn recv(&mut self) -> std::io::Result<()> {
+        let mut buf = [0; MAX_MSG_LEN];
+
+        let bytes_read = match self.stream.read(&mut buf).await {
+            Ok(bytes_read) => bytes_read,
+            Err(err) => match err.kind() {
+                ErrorKind::WouldBlock => {
+                    return Ok(());
+                }
+                _ => panic!("{err}"),
+            },
+        };
+
+        if bytes_read == 0 {
+            return Ok(());
+        }
+
+        let buf = &buf[..bytes_read];
+
+        self.partial_line += String::from_utf8_lossy(buf).into_owned().as_str();
+        let new_lines: Vec<&str> = self.partial_line.split("\r\n").collect();
+        let len = new_lines.len();
+
+        for (index, line) in new_lines.into_iter().enumerate() {
+            if index == len - 1 && &buf[buf.len() - 3..] != b"\r\n" {
+                self.partial_line = line.to_owned();
+                break;
+            }
+            self.recv_queue.push_back(line.to_owned());
+        }
+        Ok(())
     }
 
-    pub fn privmsg_all(&mut self, message: &str) {
-        for i in 0..self.config.channels.len() {
-            let channel = self.config.channels.iter().nth(i).unwrap();
-            debug!("sending privmsg to {} : {}", channel, message);
-            self.queue(&format!("PRIVMSG {} :{}", channel, message));
+    async fn send(&mut self) -> std::io::Result<()> {
+        let mut context = self.context.write().await;
+        while context.send_queue.len() > 0 {
+            let msg = context.send_queue.pop_front().unwrap();
+
+            trace!(">> {}", msg.replace("\r\n", ""));
+            let bytes_written = match self.stream.write(msg.as_bytes()).await {
+                Ok(bytes_written) => bytes_written,
+                Err(err) => match err.kind() {
+                    ErrorKind::WouldBlock => {
+                        return Ok(());
+                    }
+                    _ => panic!("{err}"),
+                },
+            };
+
+            if bytes_written < msg.len() {
+                context
+                    .send_queue
+                    .push_front(msg[bytes_written..].to_owned());
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn handle_commands(&mut self) {
+        while self.recv_queue.len() != 0 {
+            let owned_line = self.recv_queue.pop_front().unwrap();
+            let line = owned_line.as_str();
+
+            trace!("<< {:?}", line);
+
+            let mut message: IrcMessage = line.into();
+
+            let Some(prefix) = &mut message.prefix else {
+                return self.handle_message(&message).await;
+            };
+
+            self.handle_message(&message).await;
         }
     }
 
     async fn handle_message<'a>(&mut self, message: &'a IrcMessage<'a>) {
         match message.command {
-            IrcCommand::PING => self.event_ping(&message.parameters[0]),
-            IrcCommand::RPL_WELCOME => self.event_welcome(&message.parameters[1..].join(" ")),
-            IrcCommand::ERR_NICKNAMEINUSE => self.event_nicknameinuse(),
-            IrcCommand::KICK => self.event_kick(
-                &message.parameters[0],
-                &message.parameters[1],
-                &message.prefix.as_ref().unwrap().nick,
-                &message.parameters[2..].join(" "),
-            ),
+            IrcCommand::PING => self.event_ping(&message.parameters[0]).await,
+            IrcCommand::RPL_WELCOME => self.event_welcome(&message.parameters[1..].join(" ")).await,
+            IrcCommand::ERR_NICKNAMEINUSE => self.event_nicknameinuse().await,
+            IrcCommand::KICK => {
+                self.event_kick(
+                    &message.parameters[0],
+                    &message.parameters[1],
+                    &message.prefix.as_ref().unwrap().nick,
+                    &message.parameters[2..].join(" "),
+                )
+                .await
+            }
             IrcCommand::QUIT => self.event_quit(message.prefix.as_ref().unwrap()).await,
-            IrcCommand::INVITE => self.event_invite(
-                message.prefix.as_ref().unwrap(),
-                &message.parameters[1][1..],
-            ),
-            IrcCommand::PRIVMSG => self.event_privmsg(
-                message.prefix.as_ref().unwrap(),
-                &message.parameters[0],
-                &message.parameters[1..].join(" ")[1..],
-            ),
-            IrcCommand::NOTICE => self.event_notice(
-                message.prefix.as_ref(),
-                &message.parameters[0],
-                &message.parameters[1..].join(" ")[1..],
-            ),
+            IrcCommand::INVITE => {
+                self.event_invite(
+                    message.prefix.as_ref().unwrap(),
+                    &message.parameters[1][1..],
+                )
+                .await
+            }
+            IrcCommand::PRIVMSG => {
+                self.event_privmsg(
+                    message.prefix.as_ref().unwrap(),
+                    &message.parameters[0],
+                    &message.parameters[1..].join(" ")[1..],
+                )
+                .await
+            }
+            IrcCommand::NOTICE => {
+                self.event_notice(
+                    message.prefix.as_ref(),
+                    &message.parameters[0],
+                    &message.parameters[1..].join(" ")[1..],
+                )
+                .await
+            }
             _ => {}
         }
+    }
+
+    pub async fn update(&mut self) -> std::io::Result<()> {
+        self.recv().await?;
+        self.handle_commands().await;
+        self.send().await?;
+        Ok(())
     }
 }

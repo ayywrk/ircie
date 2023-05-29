@@ -81,7 +81,7 @@ impl_into_system!(T1, T2);
 impl_into_system!(T1, T2, T3);
 impl_into_system!(T1, T2, T3, T4);
 
-pub(crate) type StoredSystem = Box<dyn for<'a> System<'a>>;
+pub(crate) type StoredSystem = Box<dyn for<'a> System<'a> + Send + Sync>;
 
 pub(crate) trait SystemParam {
     type Item<'new>;
