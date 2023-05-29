@@ -1,29 +1,33 @@
 use std::time::Duration;
 
+use log::{debug, info, warn};
+
 use crate::{Irc, IrcPrefix};
 
 impl Irc {
     pub(crate) fn event_ping(&mut self, ping_token: &str) {
+        debug!("PING {}", ping_token);
         self.queue(&format!("PONG {}", ping_token));
     }
 
-    pub(crate) fn event_welcome(&mut self) {
+    pub(crate) fn event_welcome(&mut self, welcome_msg: &str) {
+        debug!("{welcome_msg}");
         // self.identify();
         self.join_config_channels();
     }
 
     pub(crate) fn event_nicknameinuse(&mut self) {
-        self.update_nick(&format!("{}_", &self.config.nick))
+        let new_nick = &format!("{}_", &self.config.nick);
+        warn!("Nick already in use., switching to {}", new_nick);
+        self.update_nick(new_nick)
     }
 
-    pub(crate) fn event_kick(&mut self, channel: &str, nick: &str, message: &str) {
+    pub(crate) fn event_kick(&mut self, channel: &str, nick: &str, kicker: &str, reason: &str) {
         if nick != &self.config.nick {
             return;
         }
 
-        println!("we got kicked!");
-        println!("{message}");
-
+        warn!("We got kicked from {} by {}! ({})", channel, kicker, reason);
         self.join(channel);
     }
 
@@ -32,14 +36,15 @@ impl Irc {
             return;
         }
 
-        println!("need to reconnect.");
+        warn!("We quit. We'll reconnect in {} seconds.", 15);
         std::thread::sleep(Duration::from_secs(15));
         self.connect().await.unwrap();
         self.register();
     }
 
     pub(crate) fn event_invite(&mut self, prefix: &IrcPrefix, channel: &str) {
-        println!("{} invited us to {}", prefix.nick, channel);
+        info!("{} invited us to {}", prefix.nick, channel);
+        self.join(channel);
     }
 
     pub(crate) fn event_notice(
@@ -66,6 +71,15 @@ impl Irc {
         if self.is_flood(channel) {
             return;
         }
-        self.run_system(prefix, sys_name);
+
+        let response = self.run_system(prefix, sys_name);
+
+        if response.0.is_none() {
+            return;
+        }
+
+        for line in response.0.unwrap() {
+            self.privmsg(channel, &line)
+        }
     }
 }

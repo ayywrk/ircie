@@ -6,7 +6,7 @@ pub mod system_params;
 
 use std::{
     any::TypeId,
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     io::ErrorKind,
     net::ToSocketAddrs,
     path::Path,
@@ -16,8 +16,9 @@ use std::{
 use async_native_tls::TlsStream;
 use factory::Factory;
 use irc_command::IrcCommand;
+use log::{debug, info, trace, warn};
 use serde::{Deserialize, Serialize};
-use system::{IntoSystem, StoredSystem, System};
+use system::{IntoSystem, Response, StoredSystem, System};
 use tokio::{
     fs::File,
     io::{AsyncReadExt, AsyncWriteExt},
@@ -141,7 +142,7 @@ pub struct IrcConfig {
     host: String,
     port: u16,
     ssl: bool,
-    channels: Vec<String>,
+    channels: HashSet<String>,
     nick: String,
     user: String,
     real: String,
@@ -204,13 +205,15 @@ impl Irc {
         self
     }
 
-    pub fn run_system<'a>(&mut self, prefix: &'a IrcPrefix, name: &str) {
+    pub fn run_system<'a>(&mut self, prefix: &'a IrcPrefix, name: &str) -> Response {
         let system = self.systems.get_mut(name).unwrap();
-        system.run(prefix, &mut self.factory);
+        system.run(prefix, &mut self.factory)
     }
 
     pub async fn connect(&mut self) -> std::io::Result<()> {
         let domain = format!("{}:{}", self.config.host, self.config.port);
+
+        info!("Connecting to {}", domain);
 
         let mut addrs = domain
             .to_socket_addrs()
@@ -235,6 +238,10 @@ impl Irc {
     }
 
     pub fn register(&mut self) {
+        info!(
+            "Registering as {}!{} ({})",
+            self.config.nick, self.config.user, self.config.real
+        );
         self.queue(&format!(
             "USER {} 0 * {}",
             self.config.user, self.config.real
@@ -279,6 +286,7 @@ impl Irc {
         while self.send_queue.len() > 0 {
             let msg = self.send_queue.pop_front().unwrap();
 
+            trace!(">> {}", msg.replace("\r\n", ""));
             let bytes_written = match self.stream.write(msg.as_bytes()).await {
                 Ok(bytes_written) => bytes_written,
                 Err(err) => match err.kind() {
@@ -306,13 +314,11 @@ impl Irc {
                 let max = (MAX_MSG_LEN - "\r\n".len()).min(msg[i..].len());
 
                 let mut m = msg[i..(i + max)].to_owned();
-                println!(">> {:?}", m);
                 m = m + "\r\n";
                 self.send_queue.push_back(m);
                 i += MAX_MSG_LEN - "\r\n".len()
             }
         } else {
-            println!(">> {:?}", msg);
             msg = msg + "\r\n";
             self.send_queue.push_back(msg);
         }
@@ -320,8 +326,8 @@ impl Irc {
 
     pub async fn update(&mut self) -> std::io::Result<()> {
         self.recv().await?;
-        self.send().await?;
         self.handle_commands().await;
+        self.send().await?;
         Ok(())
     }
 
@@ -330,7 +336,7 @@ impl Irc {
             let owned_line = self.recv_queue.pop_front().unwrap();
             let line = owned_line.as_str();
 
-            println!("<< {:?}", line);
+            trace!("<< {:?}", line);
 
             let mut message: IrcMessage = line.into();
 
@@ -372,12 +378,15 @@ impl Irc {
     }
 
     fn join(&mut self, channel: &str) {
-        self.queue(&format!("JOIN {}", channel))
+        info!("Joining {channel}");
+        self.queue(&format!("JOIN {}", channel));
+        self.config.channels.insert(channel.to_owned());
     }
 
     fn join_config_channels(&mut self) {
         for i in 0..self.config.channels.len() {
-            let channel = &self.config.channels[i];
+            let channel = self.config.channels.iter().nth(i).unwrap();
+            info!("Joining {channel}");
             self.queue(&format!("JOIN {}", channel))
         }
     }
@@ -390,14 +399,18 @@ impl Irc {
     fn is_flood(&mut self, channel: &str) -> bool {
         let mut flood_control = match self.flood_controls.entry(channel.to_owned()) {
             std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
-            std::collections::hash_map::Entry::Vacant(v) => v.insert(FloodControl {
-                last_cmd: SystemTime::now(),
-            }),
+            std::collections::hash_map::Entry::Vacant(v) => {
+                v.insert(FloodControl {
+                    last_cmd: SystemTime::now(),
+                });
+                return false;
+            }
         };
 
         let elapsed = flood_control.last_cmd.elapsed().unwrap();
 
         if elapsed.as_secs_f32() < self.config.flood_interval {
+            warn!("they be floodin @ {channel}!");
             return true;
         }
 
@@ -406,12 +419,14 @@ impl Irc {
     }
 
     pub fn privmsg(&mut self, channel: &str, message: &str) {
+        debug!("sending privmsg to {} : {}", channel, message);
         self.queue(&format!("PRIVMSG {} :{}", channel, message));
     }
 
     pub fn privmsg_all(&mut self, message: &str) {
         for i in 0..self.config.channels.len() {
-            let channel = &self.config.channels[i];
+            let channel = self.config.channels.iter().nth(i).unwrap();
+            debug!("sending privmsg to {} : {}", channel, message);
             self.queue(&format!("PRIVMSG {} :{}", channel, message));
         }
     }
@@ -419,17 +434,18 @@ impl Irc {
     async fn handle_message<'a>(&mut self, message: &'a IrcMessage<'a>) {
         match message.command {
             IrcCommand::PING => self.event_ping(&message.parameters[0]),
-            IrcCommand::RPL_WELCOME => self.event_welcome(),
+            IrcCommand::RPL_WELCOME => self.event_welcome(&message.parameters[1..].join(" ")),
             IrcCommand::ERR_NICKNAMEINUSE => self.event_nicknameinuse(),
             IrcCommand::KICK => self.event_kick(
-                message.parameters[0],
-                message.parameters[1],
-                &message.parameters[3..].join(" "),
+                &message.parameters[0],
+                &message.parameters[1],
+                &message.prefix.as_ref().unwrap().nick,
+                &message.parameters[2..].join(" "),
             ),
             IrcCommand::QUIT => self.event_quit(message.prefix.as_ref().unwrap()).await,
             IrcCommand::INVITE => self.event_invite(
                 message.prefix.as_ref().unwrap(),
-                &message.parameters[0][1..],
+                &message.parameters[1][1..],
             ),
             IrcCommand::PRIVMSG => self.event_privmsg(
                 message.prefix.as_ref().unwrap(),

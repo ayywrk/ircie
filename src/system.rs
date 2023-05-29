@@ -100,3 +100,56 @@ impl IntoResponse for () {
         Response(None)
     }
 }
+
+impl IntoResponse for String {
+    fn response(self) -> Response {
+        Response(Some(vec![self]))
+    }
+}
+
+impl IntoResponse for &str {
+    fn response(self) -> Response {
+        Response(Some(vec![self.to_owned()]))
+    }
+}
+
+impl IntoResponse for Vec<String> {
+    fn response(self) -> Response {
+        Response(Some(self))
+    }
+}
+
+impl IntoResponse for Vec<&str> {
+    fn response(self) -> Response {
+        Response(Some(
+            self.iter().map(|elem| elem.to_string()).collect::<Vec<_>>(),
+        ))
+    }
+}
+
+macro_rules! impl_into_response_for_primitives {
+    ($param:ident) => {
+        impl IntoResponse for $param {
+            fn response(self) -> Response {
+                Response(Some(vec![self.to_string()]))
+            }
+        }
+    };
+}
+
+impl_into_response_for_primitives!(u8);
+impl_into_response_for_primitives!(u16);
+impl_into_response_for_primitives!(u32);
+impl_into_response_for_primitives!(usize);
+impl_into_response_for_primitives!(u64);
+impl_into_response_for_primitives!(u128);
+
+impl_into_response_for_primitives!(i8);
+impl_into_response_for_primitives!(i16);
+impl_into_response_for_primitives!(i32);
+impl_into_response_for_primitives!(isize);
+impl_into_response_for_primitives!(i64);
+impl_into_response_for_primitives!(i128);
+
+impl_into_response_for_primitives!(f32);
+impl_into_response_for_primitives!(f64);
