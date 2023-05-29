@@ -64,7 +64,7 @@ impl Irc {
         channel: &str,
         message: &str,
     ) {
-        let mut context = self.context.write().await;
+        let context = self.context.read().await;
 
         if channel == &context.config.nick {
             if message.ends_with(&format!(
@@ -74,6 +74,7 @@ impl Irc {
                 let nickserv_pass = context.config.nickserv_pass.as_ref().unwrap().to_string();
                 let nickserv_email = context.config.nickserv_email.as_ref().unwrap().to_string();
                 info!("Registering to nickserv now.");
+                let mut context = self.context.write().await;
                 context.privmsg(
                     "NickServ",
                     &format!("REGISTER {} {}", nickserv_pass, nickserv_email),
