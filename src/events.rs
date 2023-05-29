@@ -126,11 +126,8 @@ impl Irc {
             return;
         }
 
-        //TODO:
-        // MOVE RUN_SYSTEM BACK TO IRC
-
         let mut context = self.context.write().await;
-        let response = context.run_system(prefix, &sys_name);
+        let response = context.run_system(prefix, &sys_name).await;
 
         if response.0.is_none() {
             return;

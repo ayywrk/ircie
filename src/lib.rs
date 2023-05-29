@@ -12,7 +12,7 @@ use std::{
     net::ToSocketAddrs,
     path::Path,
     sync::Arc,
-    time::SystemTime,
+    time::{Duration, SystemTime},
 };
 
 use async_native_tls::TlsStream;
@@ -168,7 +168,8 @@ pub struct Context {
     send_queue: VecDeque<String>,
 
     systems: HashMap<String, StoredSystem>,
-    factory: Factory,
+    interval_tasks: Vec<(Duration, StoredSystem)>,
+    factory: Arc<RwLock<Factory>>,
 }
 
 impl Context {
@@ -274,16 +275,47 @@ impl Context {
         self
     }
 
-    pub fn add_resource<R: Send + Sync + 'static>(&mut self, res: R) -> &mut Self {
+    pub fn add_interval_task<I, S: for<'a> System<'a> + Send + Sync + 'static>(
+        &mut self,
+        duration: Duration,
+        system_task: impl for<'a> IntoSystem<'a, I, System = S>,
+    ) -> &mut Self {
+        self.interval_tasks
+            .push((duration, Box::new(system_task.into_system())));
+        self
+    }
+
+    pub async fn add_resource<R: Send + Sync + 'static>(&mut self, res: R) -> &mut Self {
         self.factory
+            .write()
+            .await
             .resources
             .insert(TypeId::of::<R>(), Box::new(res));
         self
     }
 
-    pub fn run_system<'a>(&mut self, prefix: &'a IrcPrefix, name: &str) -> Response {
+    pub async fn run_system<'a>(&mut self, prefix: &'a IrcPrefix<'a>, name: &str) -> Response {
         let system = self.systems.get_mut(name).unwrap();
-        system.run(prefix, &mut self.factory)
+        system.run(prefix, &mut *self.factory.write().await)
+    }
+
+    pub async fn run_interval_tasks(&mut self) {
+        for (task_duration, mut task) in std::mem::take(&mut self.interval_tasks) {
+            let fact = self.factory.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(task_duration).await;
+                    task.run(
+                        &IrcPrefix {
+                            nick: "",
+                            user: None,
+                            host: None,
+                        },
+                        &mut *fact.write().await,
+                    );
+                }
+            });
+        }
     }
 }
 
@@ -311,7 +343,8 @@ impl Irc {
             identified: false,
             send_queue: VecDeque::new(),
             systems: HashMap::default(),
-            factory: Factory::default(),
+            interval_tasks: Vec::new(),
+            factory: Arc::new(RwLock::new(Factory::default())),
         }));
 
         Ok(Self {
@@ -334,10 +367,22 @@ impl Irc {
         self
     }
 
+    pub async fn add_interval_task<I, S: for<'a> System<'a> + Send + Sync + 'static>(
+        &mut self,
+        duration: Duration,
+        system: impl for<'a> IntoSystem<'a, I, System = S>,
+    ) -> &mut Self {
+        {
+            let mut context = self.context.write().await;
+            context.add_interval_task(duration, system);
+        }
+        self
+    }
+
     pub async fn add_resource<R: Send + Sync + 'static>(&mut self, res: R) -> &mut Self {
         {
             let mut context = self.context.write().await;
-            context.add_resource(res);
+            context.add_resource(res).await;
         }
         self
     }
@@ -448,10 +493,12 @@ impl Irc {
     }
 
     pub async fn run(&mut self) -> std::io::Result<()> {
+        self.connect().await?;
         info!("Ready!");
         {
             let mut context = self.context.write().await;
             context.register();
+            context.run_interval_tasks().await;
         }
 
         let stream = self.stream.take().unwrap();
