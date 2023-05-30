@@ -66,6 +66,7 @@ impl std::fmt::Display for Color {
     }
 }
 
+#[derive(Clone)]
 pub struct Msg(String);
 
 impl std::fmt::Display for Msg {
@@ -94,6 +95,10 @@ impl Msg {
     }
     pub fn reset(mut self) -> Self {
         self.0 += &Format::Plain.to_string();
+        self
+    }
+    pub fn as_action(mut self) -> Self {
+        self.0 = format!("\x01ACTION {}\x01", self.0);
         self
     }
 }
