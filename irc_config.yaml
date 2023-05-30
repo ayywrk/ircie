@@ -1,0 +1,21 @@
+host: irc.supernets.org
+port: 6697
+ssl: true
+
+channels:
+    - "#superbowl"
+
+nick: BOZO
+user: bozo
+real: bozo
+
+nickserv_pass: REDACTED
+nickserv_email: REDACTED
+
+cmdkey: ~
+
+flood_interval: 1
+
+owner: "*!*@your.fucking.host"
+
+admins: []
