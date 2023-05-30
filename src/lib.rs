@@ -1,5 +1,6 @@
 pub mod events;
 pub mod factory;
+pub mod format;
 pub mod irc_command;
 pub mod system;
 pub mod system_params;

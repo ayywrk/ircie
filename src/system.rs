@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use crate::{factory::Factory, IrcPrefix};
+use crate::{factory::Factory, format::Msg, IrcPrefix};
 
 pub struct FunctionSystem<Input, F> {
     f: F,
@@ -113,13 +113,13 @@ impl IntoResponse for &str {
     }
 }
 
-impl IntoResponse for Vec<String> {
+impl IntoResponse for Msg {
     fn response(self) -> Response {
-        Response(Some(self))
+        Response(Some(vec![self.to_string()]))
     }
 }
 
-impl IntoResponse for Vec<&str> {
+impl<T: std::fmt::Display> IntoResponse for Vec<T> {
     fn response(self) -> Response {
         Response(Some(
             self.iter().map(|elem| elem.to_string()).collect::<Vec<_>>(),
