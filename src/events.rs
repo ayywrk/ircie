@@ -127,6 +127,9 @@ impl Irc {
         }
 
         let mut context = self.context.write().await;
+        if !context.systems.contains_key(&sys_name) {
+            return;
+        }
         let response = context.run_system(prefix, &sys_name).await;
 
         if response.0.is_none() {
