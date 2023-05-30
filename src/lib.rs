@@ -266,20 +266,20 @@ impl Context {
         }
     }
 
-    pub fn add_system<I, S: for<'a> System<'a> + Send + Sync + 'static>(
+    pub fn add_system<I, S: for<'a> System + Send + Sync + 'static>(
         &mut self,
         name: &str,
-        system: impl for<'a> IntoSystem<'a, I, System = S>,
+        system: impl for<'a> IntoSystem<I, System = S>,
     ) -> &mut Self {
         self.systems
             .insert(name.to_owned(), Box::new(system.into_system()));
         self
     }
 
-    pub fn add_interval_task<I, S: for<'a> System<'a> + Send + Sync + 'static>(
+    pub fn add_interval_task<I, S: for<'a> System + Send + Sync + 'static>(
         &mut self,
         duration: Duration,
-        system_task: impl for<'a> IntoSystem<'a, I, System = S>,
+        system_task: impl for<'a> IntoSystem<I, System = S>,
     ) -> &mut Self {
         self.interval_tasks
             .push((duration, Box::new(system_task.into_system())));
@@ -361,10 +361,10 @@ impl Irc {
         })
     }
 
-    pub async fn add_system<I, S: for<'a> System<'a> + Send + Sync + 'static>(
+    pub async fn add_system<I, S: for<'a> System + Send + Sync + 'static>(
         &mut self,
         name: &str,
-        system: impl for<'a> IntoSystem<'a, I, System = S>,
+        system: impl for<'a> IntoSystem<I, System = S>,
     ) -> &mut Self {
         {
             let mut context = self.context.write().await;
@@ -373,10 +373,10 @@ impl Irc {
         self
     }
 
-    pub async fn add_interval_task<I, S: for<'a> System<'a> + Send + Sync + 'static>(
+    pub async fn add_interval_task<I, S: for<'a> System + Send + Sync + 'static>(
         &mut self,
         duration: Duration,
-        system: impl for<'a> IntoSystem<'a, I, System = S>,
+        system: impl for<'a> IntoSystem<I, System = S>,
     ) -> &mut Self {
         {
             let mut context = self.context.write().await;

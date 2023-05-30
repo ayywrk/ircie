@@ -7,12 +7,12 @@ pub struct FunctionSystem<Input, F> {
     marker: PhantomData<fn() -> Input>,
 }
 
-pub trait System<'a> {
-    fn run(&mut self, prefix: &'a IrcPrefix, factory: &'a mut Factory) -> Response;
+pub trait System {
+    fn run(&mut self, prefix: &IrcPrefix, factory: &mut Factory) -> Response;
 }
 
-pub trait IntoSystem<'a, Input> {
-    type System: System<'a>;
+pub trait IntoSystem<Input> {
+    type System: System;
 
     fn into_system(self) -> Self::System;
 }
@@ -23,7 +23,7 @@ macro_rules! impl_system {
     ) => {
         #[allow(non_snake_case)]
         #[allow(unused)]
-        impl<F, R: IntoResponse, $($params: SystemParam),*> System<'_> for FunctionSystem<($($params,)*), F>
+        impl<F, R: IntoResponse, $($params: SystemParam),*> System for FunctionSystem<($($params,)*), F>
             where
                 for<'a, 'b> &'a mut F:
                     FnMut( $($params),* ) -> R +
@@ -51,7 +51,7 @@ macro_rules! impl_into_system {
     (
         $($params:ident),*
     ) => {
-        impl<F, R: IntoResponse, $($params: SystemParam),*> IntoSystem<'_, ($($params,)*)> for F
+        impl<F, R: IntoResponse, $($params: SystemParam),*> IntoSystem<($($params,)*)> for F
             where
                 for<'a, 'b> &'a mut F:
                     FnMut( $($params),* ) -> R +
@@ -81,7 +81,7 @@ impl_into_system!(T1, T2);
 impl_into_system!(T1, T2, T3);
 impl_into_system!(T1, T2, T3, T4);
 
-pub(crate) type StoredSystem = Box<dyn for<'a> System<'a> + Send + Sync>;
+pub(crate) type StoredSystem = Box<dyn for<'a> System + Send + Sync>;
 
 pub(crate) trait SystemParam {
     type Item<'new>;
