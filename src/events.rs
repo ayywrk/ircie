@@ -64,15 +64,12 @@ impl Irc {
         channel: &str,
         message: &str,
     ) {
-        let context = self.context.read().await;
+        let config = self.context.read().await.config.clone();
 
-        if channel == &context.config.nick {
-            if message.ends_with(&format!(
-                "\x02{}\x02 isn't registered.",
-                context.config.nick
-            )) {
-                let nickserv_pass = context.config.nickserv_pass.as_ref().unwrap().to_string();
-                let nickserv_email = context.config.nickserv_email.as_ref().unwrap().to_string();
+        if channel == &config.nick {
+            if message.ends_with(&format!("\x02{}\x02 isn't registered.", config.nick)) {
+                let nickserv_pass = config.nickserv_pass.as_ref().unwrap().to_string();
+                let nickserv_email = config.nickserv_email.as_ref().unwrap().to_string();
                 info!("Registering to nickserv now.");
                 let mut context = self.context.write().await;
                 context.privmsg(
@@ -106,13 +103,14 @@ impl Irc {
         channel: &str,
         message: &str,
     ) {
+        let mut elements;
         let sys_name;
         {
             let context = self.context.read().await;
             if !message.starts_with(&context.config.cmdkey) {
                 return;
             }
-            let mut elements = message.split_whitespace();
+            elements = message.split_whitespace();
             sys_name = elements.next().unwrap()[1..].to_owned();
 
             if context.is_owner(prefix) && sys_name == "raw" {
@@ -130,7 +128,9 @@ impl Irc {
         if !context.systems.contains_key(&sys_name) {
             return;
         }
-        let response = context.run_system(prefix, &sys_name).await;
+        let response = context
+            .run_system(prefix, elements.collect(), &sys_name)
+            .await;
 
         if response.0.is_none() {
             return;

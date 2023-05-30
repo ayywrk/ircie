@@ -139,13 +139,13 @@ impl<'a> From<&'a str> for IrcMessage<'a> {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct IrcConfig {
     host: String,
     port: u16,
     ssl: bool,
-    channels: HashSet<String>,
     nick: String,
+    channels: HashSet<String>,
     user: String,
     real: String,
     nickserv_pass: Option<String>,
@@ -295,9 +295,14 @@ impl Context {
         self
     }
 
-    pub async fn run_system<'a>(&mut self, prefix: &'a IrcPrefix<'a>, name: &str) -> Response {
+    pub async fn run_system<'a>(
+        &mut self,
+        prefix: &'a IrcPrefix<'a>,
+        arguments: Vec<&'a str>,
+        name: &str,
+    ) -> Response {
         let system = self.systems.get_mut(name).unwrap();
-        system.run(prefix, &mut *self.factory.write().await)
+        system.run(prefix, &arguments, &mut *self.factory.write().await)
     }
 
     pub async fn run_interval_tasks(&mut self, tx: mpsc::Sender<Vec<String>>) {
@@ -313,6 +318,7 @@ impl Context {
                             user: None,
                             host: None,
                         },
+                        &[],
                         &mut *fact.write().await,
                     );
                     if resp.0.is_none() {

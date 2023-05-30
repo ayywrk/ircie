@@ -8,7 +8,7 @@ pub struct FunctionSystem<Input, F> {
 }
 
 pub trait System {
-    fn run(&mut self, prefix: &IrcPrefix, factory: &mut Factory) -> Response;
+    fn run(&mut self, prefix: &IrcPrefix, arguments: &[&str], factory: &mut Factory) -> Response;
 }
 
 pub trait IntoSystem<Input> {
@@ -29,7 +29,7 @@ macro_rules! impl_system {
                     FnMut( $($params),* ) -> R +
                     FnMut( $(<$params as SystemParam>::Item<'b>),* ) -> R
         {
-            fn run(&mut self, prefix: &IrcPrefix, factory: &mut Factory) -> Response {
+            fn run(&mut self, prefix: &IrcPrefix, arguments: &[&str], factory: &mut Factory) -> Response {
                 fn call_inner<'a, R: IntoResponse, $($params),*>(
                     mut f: impl FnMut($($params),*) -> R,
                     $($params: $params),*
@@ -38,7 +38,7 @@ macro_rules! impl_system {
                 }
 
                 $(
-                    let $params = $params::retrieve(prefix, &factory);
+                    let $params = $params::retrieve(prefix, arguments, &factory);
                 )*
 
                 call_inner(&mut self.f, $($params),*)
@@ -74,18 +74,26 @@ impl_system!(T1);
 impl_system!(T1, T2);
 impl_system!(T1, T2, T3);
 impl_system!(T1, T2, T3, T4);
+impl_system!(T1, T2, T3, T4, T5);
+impl_system!(T1, T2, T3, T4, T5, T6);
+impl_system!(T1, T2, T3, T4, T5, T6, T7);
+impl_system!(T1, T2, T3, T4, T5, T6, T7, T8);
 
 impl_into_system!();
 impl_into_system!(T1);
 impl_into_system!(T1, T2);
 impl_into_system!(T1, T2, T3);
 impl_into_system!(T1, T2, T3, T4);
+impl_into_system!(T1, T2, T3, T4, T5);
+impl_into_system!(T1, T2, T3, T4, T5, T6);
+impl_into_system!(T1, T2, T3, T4, T5, T6, T7);
+impl_into_system!(T1, T2, T3, T4, T5, T6, T7, T8);
 
 pub(crate) type StoredSystem = Box<dyn for<'a> System + Send + Sync>;
 
 pub(crate) trait SystemParam {
     type Item<'new>;
-    fn retrieve<'r>(prefix: &'r IrcPrefix, factory: &'r Factory) -> Self::Item<'r>;
+    fn retrieve<'r>(prefix: &'r IrcPrefix, arguments: &'r[&'r str], factory: &'r Factory) -> Self::Item<'r>;
 }
 
 #[derive(Clone)]
@@ -116,6 +124,31 @@ impl IntoResponse for &str {
 impl IntoResponse for Msg {
     fn response(self) -> Response {
         Response(Some(vec![self.to_string()]))
+    }
+}
+
+impl<O, E> IntoResponse for Result<O, E>
+where
+    O: IntoResponse,
+    E: IntoResponse,
+{
+    fn response(self) -> Response {
+        match self {
+            Ok(o) => o.response(),
+            Err(e) => e.response(),
+        }
+    }
+}
+
+impl<S> IntoResponse for Option<S>
+where
+    S: IntoResponse,
+{
+    fn response(self) -> Response {
+        match self {
+            Some(s) => s.response(),
+            None => Response(None),
+        }
     }
 }
 

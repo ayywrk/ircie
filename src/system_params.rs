@@ -28,7 +28,11 @@ impl<'a, T: 'static> AsRef<T> for Res<'a, T> {
 impl<'res, T: 'static> SystemParam for Res<'res, T> {
     type Item<'new> = Res<'new, T>;
 
-    fn retrieve<'r>(_prefix: &'r IrcPrefix, factory: &'r Factory) -> Self::Item<'r> {
+    fn retrieve<'r>(
+        _prefix: &'r IrcPrefix,
+        _arguments: &'r [&'r str],
+        factory: &'r Factory,
+    ) -> Self::Item<'r> {
         Res {
             value: &factory
                 .resources
@@ -73,7 +77,11 @@ impl<'a, T: 'static> AsMut<T> for ResMut<'a, T> {
 impl<'res, T: 'static> SystemParam for ResMut<'res, T> {
     type Item<'new> = ResMut<'new, T>;
 
-    fn retrieve<'r>(_prefix: &'r IrcPrefix, factory: &'r Factory) -> Self::Item<'r> {
+    fn retrieve<'r>(
+        _prefix: &'r IrcPrefix,
+        _arguments: &'r [&'r str],
+        factory: &'r Factory,
+    ) -> Self::Item<'r> {
         let const_ptr = &factory.resources as *const HashMap<TypeId, Box<dyn Any + Send + Sync>>;
         let mut_ptr = const_ptr as *mut HashMap<TypeId, Box<dyn Any>>;
         let res_mut = unsafe { &mut *mut_ptr };
@@ -91,7 +99,33 @@ impl<'res, T: 'static> SystemParam for ResMut<'res, T> {
 impl<'a> SystemParam for IrcPrefix<'a> {
     type Item<'new> = IrcPrefix<'new>;
 
-    fn retrieve<'r>(prefix: &'r IrcPrefix, _factory: &'r Factory) -> Self::Item<'r> {
+    fn retrieve<'r>(
+        prefix: &'r IrcPrefix,
+        _arguments: &'r [&'r str],
+        _factory: &'r Factory,
+    ) -> Self::Item<'r> {
         prefix.clone()
+    }
+}
+
+pub struct Arguments<'a>(&'a [&'a str]);
+
+impl<'a> Deref for Arguments<'a> {
+    type Target = &'a [&'a str];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a> SystemParam for Arguments<'a> {
+    type Item<'new> = Arguments<'new>;
+
+    fn retrieve<'r>(
+        _prefix: &'r IrcPrefix,
+        arguments: &'r [&'r str],
+        _factory: &'r Factory,
+    ) -> Self::Item<'r> {
+        Arguments(arguments)
     }
 }
