@@ -114,6 +114,7 @@ impl Irc {
             sys_name = elements.next().unwrap()[1..].to_owned();
 
             if context.is_owner(prefix) && sys_name == "raw" {
+                drop(context);
                 let mut context = self.context.write().await;
                 context.queue(&elements.collect::<Vec<_>>().join(" "));
                 return;
