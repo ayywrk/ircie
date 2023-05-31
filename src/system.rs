@@ -125,15 +125,57 @@ pub(crate) trait SystemParam {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug)]
+pub struct ResponseData {
+    pub(crate) highlight: bool,
+    pub(crate) data: Vec<String>,
+}
+
+impl Default for ResponseData {
+    fn default() -> Self {
+        Self {
+            highlight: true,
+            data: Default::default(),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub enum Response {
-    Lines(Vec<String>),
+    Data(ResponseData),
     Empty,
     InvalidArgument,
 }
 
+impl Into<Response> for ResponseData {
+    fn into(self) -> Response {
+        Response::Data(self)
+    }
+}
+
 pub trait IntoResponse {
     fn response(self) -> Response;
+}
+
+impl IntoResponse for ResponseData {
+    fn response(self) -> Response {
+        self.into()
+    }
+}
+
+impl<T: IntoResponse> IntoResponse for (bool, T) {
+    fn response(self) -> Response {
+        let resp = self.1.response();
+
+        match resp {
+            Response::Data(data) => ResponseData {
+                highlight: self.0,
+                data: data.data,
+            }
+            .into(),
+            _ => resp,
+        }
+    }
 }
 
 impl IntoResponse for () {
@@ -144,19 +186,31 @@ impl IntoResponse for () {
 
 impl IntoResponse for String {
     fn response(self) -> Response {
-        Response::Lines(vec![self])
+        ResponseData {
+            data: vec![self],
+            ..Default::default()
+        }
+        .into()
     }
 }
 
 impl IntoResponse for &str {
     fn response(self) -> Response {
-        Response::Lines(vec![self.to_owned()])
+        ResponseData {
+            data: vec![self.to_owned()],
+            ..Default::default()
+        }
+        .into()
     }
 }
 
 impl IntoResponse for Msg {
     fn response(self) -> Response {
-        Response::Lines(vec![self.to_string()])
+        ResponseData {
+            data: vec![self.to_string()],
+            ..Default::default()
+        }
+        .into()
     }
 }
 
@@ -187,7 +241,11 @@ where
 
 impl<T: std::fmt::Display> IntoResponse for Vec<T> {
     fn response(self) -> Response {
-        Response::Lines(self.iter().map(|elem| elem.to_string()).collect::<Vec<_>>())
+        ResponseData {
+            data: self.iter().map(|elem| elem.to_string()).collect::<Vec<_>>(),
+            ..Default::default()
+        }
+        .into()
     }
 }
 
@@ -195,7 +253,11 @@ macro_rules! impl_into_response_for_primitives {
     ($param:ident) => {
         impl IntoResponse for $param {
             fn response(self) -> Response {
-                Response::Lines(vec![self.to_string()])
+                ResponseData {
+                    data: vec![self.to_string()],
+                    ..Default::default()
+                }
+                .into()
             }
         }
     };

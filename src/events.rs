@@ -128,22 +128,33 @@ impl Irc {
 
         let mut context = self.context.write().await;
         if !context.systems.contains_key(&sys_name) {
-            for line in context.run_default_system(prefix, &arguments).await {
-                context.privmsg(channel, &line)
+            let resp = context.run_default_system(prefix, &arguments).await;
+
+            let Response::Data(data) = resp else {
+                return;
+            };
+
+            for (idx, line) in data.data.iter().enumerate() {
+                if idx == 0 && data.highlight {
+                    context.privmsg(channel, &format!("{}: {}", prefix.nick, line))
+                } else {
+                    context.privmsg(channel, &line)
+                }
             }
             return;
         }
 
         let response = context.run_system(prefix, &arguments, &sys_name).await;
-
-        let lines = match response {
-            Response::Lines(lines) => lines,
-            Response::InvalidArgument => context.run_invalid_system(prefix, &arguments).await,
-            _ => return,
+        let Response::Data(data) = response else {
+            return;
         };
 
-        for line in lines {
-            context.privmsg(channel, &line)
+        for (idx, line) in data.data.iter().enumerate() {
+            if idx == 0 && data.highlight {
+                context.privmsg(channel, &format!("{}: {}", prefix.nick, line))
+            } else {
+                context.privmsg(channel, &line)
+            }
         }
     }
 }

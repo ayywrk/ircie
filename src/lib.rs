@@ -271,7 +271,7 @@ impl Context {
     pub async fn run_system<'a>(
         &mut self,
         prefix: &'a IrcPrefix<'a>,
-        arguments: &'a[&'a str],
+        arguments: &'a [&'a str],
         name: &str,
     ) -> Response {
         let system = self.systems.get_mut(name).unwrap();
@@ -281,44 +281,36 @@ impl Context {
     pub async fn run_default_system<'a>(
         &mut self,
         prefix: &'a IrcPrefix<'a>,
-        arguments: &'a[&'a str],
-    ) -> Vec<String> {
-        if self.default_system.is_none() {
-            return vec![];
+        arguments: &'a [&'a str],
+    ) -> Response {
+        if self.invalid_system.is_none() {
+            return Response::Empty;
         }
 
-        if let Response::Lines(lines) = self.default_system.as_mut().unwrap().run(
+        self.default_system.as_mut().unwrap().run(
             prefix,
             arguments,
             &mut *self.factory.write().await,
-        ) {
-            lines
-        } else {
-            return vec![];
-        }
+        )
     }
 
     pub async fn run_invalid_system<'a>(
         &mut self,
         prefix: &'a IrcPrefix<'a>,
-        arguments: &'a[&'a str],
-    ) -> Vec<String> {
+        arguments: &'a [&'a str],
+    ) -> Response {
         if self.invalid_system.is_none() {
-            return vec![];
+            return Response::Empty;
         }
 
-        if let Response::Lines(lines) = self.invalid_system.as_mut().unwrap().run(
+        self.invalid_system.as_mut().unwrap().run(
             prefix,
             arguments,
             &mut *self.factory.write().await,
-        ) {
-            lines
-        } else {
-            return vec![];
-        }
+        )
     }
 
-    pub async fn run_interval_tasks(&mut self, tx: mpsc::Sender<Vec<String>>) {
+    pub async fn run_interval_tasks(&mut self, tx: mpsc::Sender<Response>) {
         for (task_duration, mut task) in std::mem::take(&mut self.interval_tasks) {
             let fact = self.factory.clone();
             let task_tx = tx.clone();
@@ -334,11 +326,7 @@ impl Context {
                         &[],
                         &mut *fact.write().await,
                     );
-                    match resp {
-                        Response::Lines(lines) => task_tx.send(lines).await.unwrap(),
-                        Response::Empty => continue,
-                        Response::InvalidArgument => continue,
-                    }
+                    task_tx.send(resp).await.unwrap();
                 }
             });
         }
@@ -554,7 +542,7 @@ impl Irc {
     pub async fn run(&mut self) -> std::io::Result<()> {
         self.connect().await?;
         info!("Ready!");
-        let (tx, mut rx) = mpsc::channel::<Vec<String>>(512);
+        let (tx, mut rx) = mpsc::channel::<Response>(512);
         {
             let mut context = self.context.write().await;
             context.register();
@@ -586,11 +574,15 @@ impl Irc {
     }
 }
 
-async fn handle_rx(rx: &mut mpsc::Receiver<Vec<String>>, arc_context: &RwLock<Context>) {
-    while let Some(data) = rx.recv().await {
+async fn handle_rx(rx: &mut mpsc::Receiver<Response>, arc_context: &RwLock<Context>) {
+    while let Some(response) = rx.recv().await {
         let mut context = arc_context.write().await;
 
-        for line in data {
+        let Response::Data(data) = response else {
+            continue;
+        };
+
+        for line in data.data {
             context.privmsg_all(&line);
         }
     }
