@@ -13,7 +13,7 @@ use std::{
     net::ToSocketAddrs,
     path::Path,
     sync::Arc,
-    time::{Duration, SystemTime},
+    time::SystemTime,
 };
 
 use async_native_tls::TlsStream;
@@ -171,7 +171,7 @@ pub struct Context {
     default_system: Option<StoredSystem>,
     invalid_system: Option<StoredSystem>,
     systems: HashMap<String, StoredSystem>,
-    interval_tasks: Vec<(Duration, StoredSystem)>,
+    tasks: Vec<StoredSystem>,
     factory: Arc<RwLock<Factory>>,
 }
 
@@ -310,13 +310,12 @@ impl Context {
         )
     }
 
-    pub async fn run_interval_tasks(&mut self, tx: mpsc::Sender<Response>) {
-        for (task_duration, mut task) in std::mem::take(&mut self.interval_tasks) {
+    pub async fn run_tasks(&mut self, tx: mpsc::Sender<Response>) {
+        for mut task in std::mem::take(&mut self.tasks) {
             let fact = self.factory.clone();
             let task_tx = tx.clone();
             tokio::spawn(async move {
                 loop {
-                    tokio::time::sleep(task_duration).await;
                     let resp = task.run(
                         &IrcPrefix {
                             nick: "",
@@ -359,7 +358,7 @@ impl Irc {
             default_system: None,
             invalid_system: None,
             systems: HashMap::default(),
-            interval_tasks: Vec::new(),
+            tasks: Vec::new(),
             factory: Arc::new(RwLock::new(Factory::default())),
         }));
 
@@ -407,16 +406,13 @@ impl Irc {
         self
     }
 
-    pub async fn add_interval_task<I, S: for<'a> System + Send + Sync + 'static>(
+    pub async fn add_task<I, S: for<'a> System + Send + Sync + 'static>(
         &mut self,
-        duration: Duration,
         system: impl for<'a> IntoSystem<I, System = S>,
     ) -> &mut Self {
         {
             let mut context = self.context.write().await;
-            context
-                .interval_tasks
-                .push((duration, Box::new(system.into_system())));
+            context.tasks.push(Box::new(system.into_system()));
         }
         self
     }
@@ -546,7 +542,7 @@ impl Irc {
         {
             let mut context = self.context.write().await;
             context.register();
-            context.run_interval_tasks(tx).await;
+            context.run_tasks(tx).await;
         }
 
         let stream = self.stream.take().unwrap();
