@@ -1,7 +1,7 @@
 use log::{debug, info, warn};
 use std::time::Duration;
 
-use crate::{Irc, IrcPrefix};
+use crate::{system::Response, Irc, IrcPrefix};
 
 impl Irc {
     pub(crate) async fn event_ping(&mut self, ping_token: &str) {
@@ -124,22 +124,26 @@ impl Irc {
             return;
         }
 
+        let arguments = elements.collect::<Vec<_>>();
+
         let mut context = self.context.write().await;
         if !context.systems.contains_key(&sys_name) {
+            for line in context.run_default_system(prefix, &arguments).await {
+                context.privmsg(channel, &line)
+            }
             return;
         }
-        let response = context
-            .run_system(prefix, elements.collect(), &sys_name)
-            .await;
 
-        match response {
-            crate::system::Response::Lines(lines) => {
-                for line in lines {
-                    context.privmsg(channel, &line)
-                }
-            }
-            crate::system::Response::Empty => return,
-            crate::system::Response::InvalidArgument => return,
+        let response = context.run_system(prefix, &arguments, &sys_name).await;
+
+        let lines = match response {
+            Response::Lines(lines) => lines,
+            Response::InvalidArgument => context.run_invalid_system(prefix, &arguments).await,
+            _ => return,
+        };
+
+        for line in lines {
+            context.privmsg(channel, &line)
         }
     }
 }

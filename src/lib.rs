@@ -168,6 +168,8 @@ pub struct Context {
     identified: bool,
     send_queue: VecDeque<String>,
 
+    default_system: Option<StoredSystem>,
+    invalid_system: Option<StoredSystem>,
     systems: HashMap<String, StoredSystem>,
     interval_tasks: Vec<(Duration, StoredSystem)>,
     factory: Arc<RwLock<Factory>>,
@@ -266,43 +268,54 @@ impl Context {
         }
     }
 
-    pub fn add_system<I, S: for<'a> System + Send + Sync + 'static>(
-        &mut self,
-        name: &str,
-        system: impl for<'a> IntoSystem<I, System = S>,
-    ) -> &mut Self {
-        self.systems
-            .insert(name.to_owned(), Box::new(system.into_system()));
-        self
-    }
-
-    pub fn add_interval_task<I, S: for<'a> System + Send + Sync + 'static>(
-        &mut self,
-        duration: Duration,
-        system_task: impl for<'a> IntoSystem<I, System = S>,
-    ) -> &mut Self {
-        self.interval_tasks
-            .push((duration, Box::new(system_task.into_system())));
-        self
-    }
-
-    pub async fn add_resource<R: Send + Sync + 'static>(&mut self, res: R) -> &mut Self {
-        self.factory
-            .write()
-            .await
-            .resources
-            .insert(TypeId::of::<R>(), Box::new(res));
-        self
-    }
-
     pub async fn run_system<'a>(
         &mut self,
         prefix: &'a IrcPrefix<'a>,
-        arguments: Vec<&'a str>,
+        arguments: &'a[&'a str],
         name: &str,
     ) -> Response {
         let system = self.systems.get_mut(name).unwrap();
-        system.run(prefix, &arguments, &mut *self.factory.write().await)
+        system.run(prefix, arguments, &mut *self.factory.write().await)
+    }
+
+    pub async fn run_default_system<'a>(
+        &mut self,
+        prefix: &'a IrcPrefix<'a>,
+        arguments: &'a[&'a str],
+    ) -> Vec<String> {
+        if self.default_system.is_none() {
+            return vec![];
+        }
+
+        if let Response::Lines(lines) = self.default_system.as_mut().unwrap().run(
+            prefix,
+            arguments,
+            &mut *self.factory.write().await,
+        ) {
+            lines
+        } else {
+            return vec![];
+        }
+    }
+
+    pub async fn run_invalid_system<'a>(
+        &mut self,
+        prefix: &'a IrcPrefix<'a>,
+        arguments: &'a[&'a str],
+    ) -> Vec<String> {
+        if self.invalid_system.is_none() {
+            return vec![];
+        }
+
+        if let Response::Lines(lines) = self.invalid_system.as_mut().unwrap().run(
+            prefix,
+            arguments,
+            &mut *self.factory.write().await,
+        ) {
+            lines
+        } else {
+            return vec![];
+        }
     }
 
     pub async fn run_interval_tasks(&mut self, tx: mpsc::Sender<Vec<String>>) {
@@ -355,6 +368,8 @@ impl Irc {
             config,
             identified: false,
             send_queue: VecDeque::new(),
+            default_system: None,
+            invalid_system: None,
             systems: HashMap::default(),
             interval_tasks: Vec::new(),
             factory: Arc::new(RwLock::new(Factory::default())),
@@ -375,7 +390,31 @@ impl Irc {
     ) -> &mut Self {
         {
             let mut context = self.context.write().await;
-            context.add_system(name, system);
+            context
+                .systems
+                .insert(name.to_owned(), Box::new(system.into_system()));
+        }
+        self
+    }
+
+    pub async fn add_default_system<I, S: for<'a> System + Send + Sync + 'static>(
+        &mut self,
+        system: impl for<'a> IntoSystem<I, System = S>,
+    ) -> &mut Self {
+        {
+            let mut context = self.context.write().await;
+            context.default_system = Some(Box::new(system.into_system()));
+        }
+        self
+    }
+
+    pub async fn add_invalid_system<I, S: for<'a> System + Send + Sync + 'static>(
+        &mut self,
+        system: impl for<'a> IntoSystem<I, System = S>,
+    ) -> &mut Self {
+        {
+            let mut context = self.context.write().await;
+            context.invalid_system = Some(Box::new(system.into_system()));
         }
         self
     }
@@ -387,15 +426,22 @@ impl Irc {
     ) -> &mut Self {
         {
             let mut context = self.context.write().await;
-            context.add_interval_task(duration, system);
+            context
+                .interval_tasks
+                .push((duration, Box::new(system.into_system())));
         }
         self
     }
 
     pub async fn add_resource<R: Send + Sync + 'static>(&mut self, res: R) -> &mut Self {
         {
-            let mut context = self.context.write().await;
-            context.add_resource(res).await;
+            let context = self.context.write().await;
+            context
+                .factory
+                .write()
+                .await
+                .resources
+                .insert(TypeId::of::<R>(), Box::new(res));
         }
         self
     }
