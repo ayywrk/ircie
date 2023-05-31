@@ -108,9 +108,9 @@ impl<'a> SystemParam for IrcPrefix<'a> {
     }
 }
 
-pub struct Arguments<'a>(&'a [&'a str]);
+pub struct Arguments<'a, const N: usize>(&'a [&'a str]);
 
-impl<'a> Deref for Arguments<'a> {
+impl<'a, const N: usize> Deref for Arguments<'a, N> {
     type Target = &'a [&'a str];
 
     fn deref(&self) -> &Self::Target {
@@ -118,14 +118,20 @@ impl<'a> Deref for Arguments<'a> {
     }
 }
 
-impl<'a> SystemParam for Arguments<'a> {
-    type Item<'new> = Arguments<'new>;
+impl<'a, const N: usize> SystemParam for Arguments<'a, N> {
+    type Item<'new> = Arguments<'new, N>;
 
     fn retrieve<'r>(
         _prefix: &'r IrcPrefix,
         arguments: &'r [&'r str],
         _factory: &'r Factory,
     ) -> Self::Item<'r> {
-        Arguments(arguments)
+        Arguments(&arguments[..N])
+    }
+
+    fn valid(_prefix: &IrcPrefix,
+    arguments: &[&str],
+    _factory: &Factory,) -> bool {
+        arguments.len() == N
     }
 }

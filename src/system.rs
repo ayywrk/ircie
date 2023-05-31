@@ -38,7 +38,12 @@ macro_rules! impl_system {
                 }
 
                 $(
+                    if !$params::valid(prefix, arguments, &factory) {
+                        return Response::InvalidArgument;
+                    }
+
                     let $params = $params::retrieve(prefix, arguments, &factory);
+
                 )*
 
                 call_inner(&mut self.f, $($params),*)
@@ -109,11 +114,22 @@ pub(crate) type StoredSystem = Box<dyn for<'a> System + Send + Sync>;
 
 pub(crate) trait SystemParam {
     type Item<'new>;
-    fn retrieve<'r>(prefix: &'r IrcPrefix, arguments: &'r[&'r str], factory: &'r Factory) -> Self::Item<'r>;
+    fn retrieve<'r>(
+        prefix: &'r IrcPrefix,
+        arguments: &'r [&'r str],
+        factory: &'r Factory,
+    ) -> Self::Item<'r>;
+    fn valid(prefix: &IrcPrefix, arguments: &[&str], factory: &Factory) -> bool {
+        true
+    }
 }
 
 #[derive(Clone)]
-pub struct Response(pub Option<Vec<String>>);
+pub enum Response {
+    Lines(Vec<String>),
+    Empty,
+    InvalidArgument,
+}
 
 pub trait IntoResponse {
     fn response(self) -> Response;
@@ -121,25 +137,25 @@ pub trait IntoResponse {
 
 impl IntoResponse for () {
     fn response(self) -> Response {
-        Response(None)
+        Response::Empty
     }
 }
 
 impl IntoResponse for String {
     fn response(self) -> Response {
-        Response(Some(vec![self]))
+        Response::Lines(vec![self])
     }
 }
 
 impl IntoResponse for &str {
     fn response(self) -> Response {
-        Response(Some(vec![self.to_owned()]))
+        Response::Lines(vec![self.to_owned()])
     }
 }
 
 impl IntoResponse for Msg {
     fn response(self) -> Response {
-        Response(Some(vec![self.to_string()]))
+        Response::Lines(vec![self.to_string()])
     }
 }
 
@@ -163,16 +179,14 @@ where
     fn response(self) -> Response {
         match self {
             Some(s) => s.response(),
-            None => Response(None),
+            None => Response::Empty,
         }
     }
 }
 
 impl<T: std::fmt::Display> IntoResponse for Vec<T> {
     fn response(self) -> Response {
-        Response(Some(
-            self.iter().map(|elem| elem.to_string()).collect::<Vec<_>>(),
-        ))
+        Response::Lines(self.iter().map(|elem| elem.to_string()).collect::<Vec<_>>())
     }
 }
 
@@ -180,7 +194,7 @@ macro_rules! impl_into_response_for_primitives {
     ($param:ident) => {
         impl IntoResponse for $param {
             fn response(self) -> Response {
-                Response(Some(vec![self.to_string()]))
+                Response::Lines(vec![self.to_string()])
             }
         }
     };

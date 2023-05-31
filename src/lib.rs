@@ -321,10 +321,11 @@ impl Context {
                         &[],
                         &mut *fact.write().await,
                     );
-                    if resp.0.is_none() {
-                        continue;
+                    match resp {
+                        Response::Lines(lines) => task_tx.send(lines).await.unwrap(),
+                        Response::Empty => continue,
+                        Response::InvalidArgument => continue,
                     }
-                    task_tx.send(resp.0.unwrap()).await.unwrap()
                 }
             });
         }

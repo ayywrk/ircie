@@ -132,12 +132,14 @@ impl Irc {
             .run_system(prefix, elements.collect(), &sys_name)
             .await;
 
-        if response.0.is_none() {
-            return;
-        }
-
-        for line in response.0.unwrap() {
-            context.privmsg(channel, &line)
+        match response {
+            crate::system::Response::Lines(lines) => {
+                for line in lines {
+                    context.privmsg(channel, &line)
+                }
+            }
+            crate::system::Response::Empty => return,
+            crate::system::Response::InvalidArgument => return,
         }
     }
 }
