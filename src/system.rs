@@ -119,6 +119,7 @@ pub(crate) trait SystemParam {
         arguments: &'r [&'r str],
         factory: &'r Factory,
     ) -> Self::Item<'r>;
+    #[allow(unused_variables)]
     fn valid(prefix: &IrcPrefix, arguments: &[&str], factory: &Factory) -> bool {
         true
     }

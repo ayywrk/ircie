@@ -129,9 +129,7 @@ impl<'a, const N: usize> SystemParam for Arguments<'a, N> {
         Arguments(&arguments[..N])
     }
 
-    fn valid(_prefix: &IrcPrefix,
-    arguments: &[&str],
-    _factory: &Factory,) -> bool {
+    fn valid(_prefix: &IrcPrefix, arguments: &[&str], _factory: &Factory) -> bool {
         arguments.len() == N
     }
 }
