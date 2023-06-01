@@ -13,7 +13,7 @@ use std::{
     net::ToSocketAddrs,
     path::Path,
     sync::Arc,
-    time::SystemTime,
+    time::{Duration, SystemTime},
 };
 
 use async_native_tls::TlsStream;
@@ -171,7 +171,7 @@ pub struct Context {
     default_system: Option<StoredSystem>,
     invalid_system: Option<StoredSystem>,
     systems: HashMap<String, StoredSystem>,
-    tasks: Vec<StoredSystem>,
+    tasks: Vec<(Duration, StoredSystem)>,
     factory: Arc<RwLock<Factory>>,
 }
 
@@ -310,12 +310,13 @@ impl Context {
         )
     }
 
-    pub async fn run_tasks(&mut self, tx: mpsc::Sender<Response>) {
-        for mut task in std::mem::take(&mut self.tasks) {
+    pub async fn run_interval_tasks(&mut self, tx: mpsc::Sender<Response>) {
+        for (duration, mut task) in std::mem::take(&mut self.tasks) {
             let fact = self.factory.clone();
             let task_tx = tx.clone();
             tokio::spawn(async move {
                 loop {
+                    tokio::time::sleep(duration).await;
                     let resp = task.run(
                         &IrcPrefix {
                             nick: "",
@@ -406,13 +407,25 @@ impl Irc {
         self
     }
 
+    pub async fn add_interval_task<I, S: for<'a> System + Send + Sync + 'static>(
+        &mut self,
+        duration: Duration,
+        system: impl for<'a> IntoSystem<I, System = S>,
+    ) -> &mut Self {
+        {
+            let mut context = self.context.write().await;
+            context.tasks.push((duration, Box::new(system.into_system())));
+        }
+        self
+    }
+
     pub async fn add_task<I, S: for<'a> System + Send + Sync + 'static>(
         &mut self,
         system: impl for<'a> IntoSystem<I, System = S>,
     ) -> &mut Self {
         {
             let mut context = self.context.write().await;
-            context.tasks.push(Box::new(system.into_system()));
+            context.tasks.push((Duration::ZERO, Box::new(system.into_system())));
         }
         self
     }
@@ -542,7 +555,7 @@ impl Irc {
         {
             let mut context = self.context.write().await;
             context.register();
-            context.run_tasks(tx).await;
+            context.run_interval_tasks(tx).await;
         }
 
         let stream = self.stream.take().unwrap();
