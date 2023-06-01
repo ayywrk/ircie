@@ -108,6 +108,28 @@ impl<'a> SystemParam for IrcPrefix<'a> {
     }
 }
 
+pub struct AnyArguments<'a>(&'a [&'a str]);
+
+impl<'a> Deref for AnyArguments<'a> {
+    type Target = &'a [&'a str];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a> SystemParam for AnyArguments<'a> {
+    type Item<'new> = AnyArguments<'new>;
+
+    fn retrieve<'r>(
+        _prefix: &'r IrcPrefix,
+        arguments: &'r [&'r str],
+        _factory: &'r Factory,
+    ) -> Self::Item<'r> {
+        AnyArguments(&arguments)
+    }
+}
+
 pub struct Arguments<'a, const N: usize>(&'a [&'a str]);
 
 impl<'a, const N: usize> Deref for Arguments<'a, N> {
