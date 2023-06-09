@@ -49,4 +49,11 @@ impl IrcContext {
     pub fn who(&mut self, channel: &str) {
         self.queue(&format!("WHO {}", channel))
     }
+
+    pub fn kick(&mut self, channel: &str, nick: &str, comment: Option<&str>) {
+        match comment {
+            Some(msg) => self.queue(&format!("KICK {} {} :{}", channel, nick, msg)),
+            None => self.queue(&format!("KICK {} {}", channel, nick)),
+        }
+    }
 }
