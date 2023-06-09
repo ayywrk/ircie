@@ -1,4 +1,4 @@
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Format {
     Bold,
     Italics,
@@ -23,7 +23,7 @@ impl std::fmt::Display for Format {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Color {
     White,
     Black,
