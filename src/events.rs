@@ -15,16 +15,20 @@ impl Irc {
 
     pub(crate) async fn event_welcome(&mut self, welcome_msg: &str) {
         debug!("{welcome_msg}");
+        self.identify().await;
+
         let mut context = self.context.write().await;
-        context.identify();
-        context.join_config_channels();
+        for channel in &self.config.channels {
+            context.join(channel);
+        }
     }
 
     pub(crate) async fn event_nicknameinuse(&mut self) {
         let mut context = self.context.write().await;
-        let new_nick = &format!("{}_", &context.config.nick);
+        let new_nick = format!("{}_", &self.config.nick);
         warn!("Nick already in use., switching to {}", new_nick);
-        context.update_nick(new_nick)
+        context.nick(&new_nick);
+        self.config.nick = new_nick;
     }
 
     pub(crate) async fn event_kick(
@@ -35,7 +39,7 @@ impl Irc {
         reason: &str,
     ) {
         let mut context = self.context.write().await;
-        if nick != &context.config.nick {
+        if nick != &self.config.nick {
             return;
         }
 
@@ -44,7 +48,7 @@ impl Irc {
     }
 
     pub(crate) async fn event_quit<'a>(&mut self, prefix: &'a IrcPrefix<'a>) {
-        if prefix.nick != self.context.read().await.config.nick {
+        if prefix.nick != self.config.nick {
             return;
         }
 
@@ -64,7 +68,7 @@ impl Irc {
         channel: &str,
         message: &str,
     ) {
-        let config = self.context.read().await.config.clone();
+        let config = self.config.clone();
 
         if channel == &config.nick {
             if message.ends_with(&format!("\x02{}\x02 isn't registered.", config.nick)) {
@@ -87,12 +91,13 @@ impl Irc {
                     + 1;
 
                 info!("Waiting {} seconds to register.", seconds);
+                /* TODO: fix this
                 let ctx_clone = self.context.clone();
-
                 tokio::spawn(async move {
                     tokio::time::sleep(Duration::from_secs(seconds as u64)).await;
-                    ctx_clone.write().await.identify();
+                    self.identify().await;
                 });
+                 */
             }
         }
     }
@@ -107,13 +112,13 @@ impl Irc {
         let sys_name;
         {
             let context = self.context.read().await;
-            if !message.starts_with(&context.config.cmdkey) {
+            if !message.starts_with(&self.config.cmdkey) {
                 return;
             }
             elements = message.split_whitespace();
             sys_name = elements.next().unwrap()[1..].to_owned();
 
-            if context.is_owner(prefix) && sys_name == "raw" {
+            if prefix.owner() && sys_name == "raw" {
                 drop(context);
                 let mut context = self.context.write().await;
                 context.queue(&elements.collect::<Vec<_>>().join(" "));
@@ -127,14 +132,14 @@ impl Irc {
 
         let arguments = elements.collect::<Vec<_>>();
 
-        let mut context = self.context.write().await;
-        if !context.systems.contains_key(&sys_name) {
-            let resp = context.run_default_system(prefix, &arguments).await;
+        if !self.systems.contains_key(&sys_name) {
+            let resp = self.run_default_system(prefix, channel, &arguments).await;
 
             let Response::Data(data) = resp else {
                 return;
             };
 
+            let mut context = self.context.write().await;
             for (idx, line) in data.data.iter().enumerate() {
                 if idx == 0 && data.highlight {
                     context.privmsg(channel, &format!("{}: {}", prefix.nick, line))
@@ -145,11 +150,12 @@ impl Irc {
             return;
         }
 
-        let response = context.run_system(prefix, &arguments, &sys_name).await;
+        let response = self.run_system(prefix, channel, &arguments, &sys_name).await;
         let Response::Data(data) = response else {
             return;
         };
 
+        let mut context = self.context.write().await;
         for (idx, line) in data.data.iter().enumerate() {
             if idx == 0 && data.highlight {
                 context.privmsg(channel, &format!("{}: {}", prefix.nick, line))

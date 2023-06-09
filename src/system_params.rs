@@ -4,7 +4,7 @@ use std::{
     ops::{Deref, DerefMut},
 };
 
-use crate::{factory::Factory, system::SystemParam, IrcPrefix};
+use crate::{factory::Factory, system::SystemParam, IrcContext, IrcPrefix};
 
 #[derive(Debug)]
 pub struct Res<'a, T: 'static> {
@@ -30,7 +30,9 @@ impl<'res, T: 'static> SystemParam for Res<'res, T> {
 
     fn retrieve<'r>(
         _prefix: &'r IrcPrefix,
+        _channel: &str,
         _arguments: &'r [&'r str],
+        _context: &'r IrcContext,
         factory: &'r Factory,
     ) -> Self::Item<'r> {
         Res {
@@ -79,7 +81,9 @@ impl<'res, T: 'static> SystemParam for ResMut<'res, T> {
 
     fn retrieve<'r>(
         _prefix: &'r IrcPrefix,
+        _channel: &str,
         _arguments: &'r [&'r str],
+        _context: &'r IrcContext,
         factory: &'r Factory,
     ) -> Self::Item<'r> {
         let const_ptr = &factory.resources as *const HashMap<TypeId, Box<dyn Any + Send + Sync>>;
@@ -101,10 +105,35 @@ impl<'a> SystemParam for IrcPrefix<'a> {
 
     fn retrieve<'r>(
         prefix: &'r IrcPrefix,
+        _channel: &str,
         _arguments: &'r [&'r str],
+        _context: &'r IrcContext,
         _factory: &'r Factory,
     ) -> Self::Item<'r> {
         prefix.clone()
+    }
+}
+
+pub struct Channel<'a>(&'a str);
+impl<'a> Deref for Channel<'a> {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a> SystemParam for Channel<'a> {
+    type Item<'new> = Channel<'new>;
+
+    fn retrieve<'r>(
+        _prefix: &'r IrcPrefix,
+        channel: &'r str,
+        _arguments: &'r [&'r str],
+        _context: &'r IrcContext,
+        _factory: &'r Factory,
+    ) -> Self::Item<'r> {
+        Channel(channel)
     }
 }
 
@@ -123,7 +152,9 @@ impl<'a> SystemParam for AnyArguments<'a> {
 
     fn retrieve<'r>(
         _prefix: &'r IrcPrefix,
+        _channel: &str,
         arguments: &'r [&'r str],
+        _context: &'r IrcContext,
         _factory: &'r Factory,
     ) -> Self::Item<'r> {
         AnyArguments(&arguments)
@@ -145,7 +176,9 @@ impl<'a, const N: usize> SystemParam for Arguments<'a, N> {
 
     fn retrieve<'r>(
         _prefix: &'r IrcPrefix,
+        _channel: &str,
         arguments: &'r [&'r str],
+        _context: &'r IrcContext,
         _factory: &'r Factory,
     ) -> Self::Item<'r> {
         Arguments(&arguments[..N])
@@ -153,5 +186,38 @@ impl<'a, const N: usize> SystemParam for Arguments<'a, N> {
 
     fn valid(_prefix: &IrcPrefix, arguments: &[&str], _factory: &Factory) -> bool {
         arguments.len() == N
+    }
+}
+
+pub struct Context<'a>(&'a mut IrcContext);
+
+impl<'a> Deref for Context<'a> {
+    type Target = IrcContext;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'a> DerefMut for Context<'a> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl<'a> SystemParam for Context<'a> {
+    type Item<'new> = Context<'new>;
+
+    fn retrieve<'r>(
+        _prefix: &'r IrcPrefix,
+        _channel: &str,
+        _arguments: &'r [&'r str],
+        context: &'r IrcContext,
+        _factory: &'r Factory,
+    ) -> Self::Item<'r> {
+        let const_ptr = context as *const IrcContext;
+        let mut_ptr = const_ptr as *mut IrcContext;
+        let ctx_mut = unsafe { &mut *mut_ptr };
+        Context(ctx_mut)
     }
 }

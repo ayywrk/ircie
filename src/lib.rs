@@ -26,7 +26,7 @@ use tokio::{
     fs::File,
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf},
     net::TcpStream,
-    sync::{mpsc, RwLock},
+    sync::RwLock,
 };
 
 pub(crate) const MAX_MSG_LEN: usize = 512;
@@ -69,11 +69,30 @@ impl Default for FloodControl {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum IrcPrefixKind {
+    Owner,
+    Admin,
+    #[default]
+    User,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct IrcPrefix<'a> {
     pub nick: &'a str,
     pub user: Option<&'a str>,
     pub host: Option<&'a str>,
+    kind: IrcPrefixKind,
+}
+
+impl<'a> IrcPrefix<'a> {
+    pub fn owner(&self) -> bool {
+        self.kind == IrcPrefixKind::Owner
+    }
+
+    pub fn admin(&self) -> bool {
+        self.kind == IrcPrefixKind::Admin
+    }
 }
 
 impl<'a> From<&'a str> for IrcPrefix<'a> {
@@ -107,6 +126,7 @@ impl<'a> From<&'a str> for IrcPrefix<'a> {
             nick: nick,
             user: Some(user),
             host: Some(user_split[1]),
+            ..Default::default()
         }
     }
 }
@@ -163,19 +183,11 @@ pub struct IrcConfig {
 
 */
 
-pub struct Context {
-    config: IrcConfig,
-    identified: bool,
+pub struct IrcContext {
     send_queue: VecDeque<String>,
-
-    default_system: Option<StoredSystem>,
-    invalid_system: Option<StoredSystem>,
-    systems: HashMap<String, StoredSystem>,
-    tasks: Vec<(Duration, StoredSystem)>,
-    factory: Arc<RwLock<Factory>>,
 }
 
-impl Context {
+impl IrcContext {
     pub fn privmsg(&mut self, channel: &str, message: &str) {
         debug!("sending privmsg to {} : {}", channel, message);
         self.queue(&format!("PRIVMSG {} :{}", channel, message));
@@ -200,136 +212,13 @@ impl Context {
         }
     }
 
-    pub fn identify(&mut self) {
-        if self.config.nickserv_pass.is_none() || self.identified {
-            return;
-        }
-
-        self.privmsg(
-            "NickServ",
-            &format!("IDENTIFY {}", self.config.nickserv_pass.as_ref().unwrap()),
-        );
-    }
-
-    pub fn register(&mut self) {
-        info!(
-            "Registering as {}!{} ({})",
-            self.config.nick, self.config.user, self.config.real
-        );
-        self.queue(&format!(
-            "USER {} 0 * {}",
-            self.config.user, self.config.real
-        ));
-        self.queue(&format!("NICK {}", self.config.nick));
-    }
-
-    fn is_owner(&self, prefix: &IrcPrefix) -> bool {
-        self.is_admin(prefix, &self.config.owner)
-    }
-
-    fn is_admin(&self, prefix: &IrcPrefix, admin: &str) -> bool {
-        let admin = ":".to_owned() + &admin;
-        let admin_prefix: IrcPrefix = admin.as_str().into();
-
-        if (admin_prefix.nick == prefix.nick || admin_prefix.nick == "*")
-            && (admin_prefix.user == prefix.user || admin_prefix.user == Some("*"))
-            && (admin_prefix.host == prefix.host || admin_prefix.host == Some("*"))
-        {
-            return true;
-        }
-
-        false
-    }
-
-    fn join(&mut self, channel: &str) {
+    pub fn join(&mut self, channel: &str) {
         info!("Joining {channel}");
         self.queue(&format!("JOIN {}", channel));
-        self.config.channels.insert(channel.to_owned());
     }
 
-    fn join_config_channels(&mut self) {
-        for i in 0..self.config.channels.len() {
-            let channel = self.config.channels.iter().nth(i).unwrap();
-            info!("Joining {channel}");
-            self.queue(&format!("JOIN {}", channel))
-        }
-    }
-
-    fn update_nick(&mut self, new_nick: &str) {
-        self.config.nick = new_nick.to_owned();
-        self.queue(&format!("NICK {}", self.config.nick));
-    }
-
-    pub fn privmsg_all(&mut self, message: &str) {
-        for i in 0..self.config.channels.len() {
-            let channel = self.config.channels.iter().nth(i).unwrap();
-            debug!("sending privmsg to {} : {}", channel, message);
-            self.queue(&format!("PRIVMSG {} :{}", channel, message));
-        }
-    }
-
-    pub async fn run_system<'a>(
-        &mut self,
-        prefix: &'a IrcPrefix<'a>,
-        arguments: &'a [&'a str],
-        name: &str,
-    ) -> Response {
-        let system = self.systems.get_mut(name).unwrap();
-        system.run(prefix, arguments, &mut *self.factory.write().await)
-    }
-
-    pub async fn run_default_system<'a>(
-        &mut self,
-        prefix: &'a IrcPrefix<'a>,
-        arguments: &'a [&'a str],
-    ) -> Response {
-        if self.invalid_system.is_none() {
-            return Response::Empty;
-        }
-
-        self.default_system.as_mut().unwrap().run(
-            prefix,
-            arguments,
-            &mut *self.factory.write().await,
-        )
-    }
-
-    pub async fn run_invalid_system<'a>(
-        &mut self,
-        prefix: &'a IrcPrefix<'a>,
-        arguments: &'a [&'a str],
-    ) -> Response {
-        if self.invalid_system.is_none() {
-            return Response::Empty;
-        }
-
-        self.invalid_system.as_mut().unwrap().run(
-            prefix,
-            arguments,
-            &mut *self.factory.write().await,
-        )
-    }
-
-    pub async fn run_interval_tasks(&mut self, tx: mpsc::Sender<Response>) {
-        for (duration, mut task) in std::mem::take(&mut self.tasks) {
-            let fact = self.factory.clone();
-            let task_tx = tx.clone();
-            tokio::spawn(async move {
-                loop {
-                    tokio::time::sleep(duration).await;
-                    let resp = task.run(
-                        &IrcPrefix {
-                            nick: "",
-                            user: None,
-                            host: None,
-                        },
-                        &[],
-                        &mut *fact.write().await,
-                    );
-                    task_tx.send(resp).await.unwrap();
-                }
-            });
-        }
+    pub fn nick(&mut self, nick: &str) {
+        self.queue(&format!("NICK {}", nick));
     }
 }
 
@@ -338,10 +227,19 @@ pub trait AsyncReadWrite: AsyncRead + AsyncWrite + Send + Unpin {}
 impl<T: AsyncRead + AsyncWrite + Send + Unpin> AsyncReadWrite for T {}
 
 pub struct Irc {
-    context: Arc<RwLock<Context>>,
+    context: Arc<RwLock<IrcContext>>,
     flood_controls: HashMap<String, FloodControl>,
     stream: Option<Box<dyn AsyncReadWrite>>,
     partial_line: String,
+
+    config: IrcConfig,
+    identified: bool,
+
+    default_system: Option<StoredSystem>,
+    invalid_system: Option<StoredSystem>,
+    systems: HashMap<String, StoredSystem>,
+    tasks: Vec<(Duration, StoredSystem)>,
+    factory: Arc<RwLock<Factory>>,
 }
 
 impl Irc {
@@ -352,15 +250,8 @@ impl Irc {
 
         let config: IrcConfig = serde_yaml::from_str(&contents).unwrap();
 
-        let context = Arc::new(RwLock::new(Context {
-            config,
-            identified: false,
+        let context = Arc::new(RwLock::new(IrcContext {
             send_queue: VecDeque::new(),
-            default_system: None,
-            invalid_system: None,
-            systems: HashMap::default(),
-            tasks: Vec::new(),
-            factory: Arc::new(RwLock::new(Factory::default())),
         }));
 
         Ok(Self {
@@ -368,6 +259,13 @@ impl Irc {
             stream: None,
             flood_controls: HashMap::default(),
             partial_line: String::new(),
+            config,
+            identified: false,
+            default_system: None,
+            invalid_system: None,
+            systems: HashMap::default(),
+            tasks: Vec::new(),
+            factory: Arc::new(RwLock::new(Factory::default())),
         })
     }
 
@@ -376,12 +274,8 @@ impl Irc {
         name: &str,
         system: impl for<'a> IntoSystem<I, System = S>,
     ) -> &mut Self {
-        {
-            let mut context = self.context.write().await;
-            context
-                .systems
-                .insert(name.to_owned(), Box::new(system.into_system()));
-        }
+        self.systems
+            .insert(name.to_owned(), Box::new(system.into_system()));
         self
     }
 
@@ -389,10 +283,7 @@ impl Irc {
         &mut self,
         system: impl for<'a> IntoSystem<I, System = S>,
     ) -> &mut Self {
-        {
-            let mut context = self.context.write().await;
-            context.default_system = Some(Box::new(system.into_system()));
-        }
+        self.default_system = Some(Box::new(system.into_system()));
         self
     }
 
@@ -400,10 +291,7 @@ impl Irc {
         &mut self,
         system: impl for<'a> IntoSystem<I, System = S>,
     ) -> &mut Self {
-        {
-            let mut context = self.context.write().await;
-            context.invalid_system = Some(Box::new(system.into_system()));
-        }
+        self.invalid_system = Some(Box::new(system.into_system()));
         self
     }
 
@@ -412,10 +300,7 @@ impl Irc {
         duration: Duration,
         system: impl for<'a> IntoSystem<I, System = S>,
     ) -> &mut Self {
-        {
-            let mut context = self.context.write().await;
-            context.tasks.push((duration, Box::new(system.into_system())));
-        }
+        self.tasks.push((duration, Box::new(system.into_system())));
         self
     }
 
@@ -423,30 +308,22 @@ impl Irc {
         &mut self,
         system: impl for<'a> IntoSystem<I, System = S>,
     ) -> &mut Self {
-        {
-            let mut context = self.context.write().await;
-            context.tasks.push((Duration::ZERO, Box::new(system.into_system())));
-        }
+        self.tasks
+            .push((Duration::ZERO, Box::new(system.into_system())));
         self
     }
 
     pub async fn add_resource<R: Send + Sync + 'static>(&mut self, res: R) -> &mut Self {
-        {
-            let context = self.context.write().await;
-            context
-                .factory
-                .write()
-                .await
-                .resources
-                .insert(TypeId::of::<R>(), Box::new(res));
-        }
+        self.factory
+            .write()
+            .await
+            .resources
+            .insert(TypeId::of::<R>(), Box::new(res));
         self
     }
 
     pub async fn connect(&mut self) -> std::io::Result<()> {
-        let context = self.context.read().await;
-
-        let domain = format!("{}:{}", context.config.host, context.config.port);
+        let domain = format!("{}:{}", self.config.host, self.config.port);
 
         info!("Connecting to {}", domain);
 
@@ -460,8 +337,8 @@ impl Irc {
 
         let plain_stream = TcpStream::connect(sock).await?;
 
-        if context.config.ssl {
-            let stream = async_native_tls::connect(context.config.host.clone(), plain_stream)
+        if self.config.ssl {
+            let stream = async_native_tls::connect(self.config.host.clone(), plain_stream)
                 .await
                 .unwrap();
             self.stream = Some(Box::new(stream));
@@ -485,13 +362,57 @@ impl Irc {
 
         let elapsed = flood_control.last_cmd.elapsed().unwrap();
 
-        if elapsed.as_secs_f32() < self.context.read().await.config.flood_interval {
+        if elapsed.as_secs_f32() < self.config.flood_interval {
             warn!("they be floodin @ {channel}!");
             return true;
         }
 
         flood_control.last_cmd = SystemTime::now();
         false
+    }
+
+    fn is_owner(&self, prefix: &IrcPrefix) -> bool {
+        let owner = ":".to_owned() + &self.config.owner;
+        let owner_prefix: IrcPrefix = owner.as_str().into();
+
+        if (owner_prefix.nick == prefix.nick || owner_prefix.nick == "*")
+            && (owner_prefix.user == prefix.user || owner_prefix.user == Some("*"))
+            && (owner_prefix.host == prefix.host || owner_prefix.host == Some("*"))
+        {
+            return true;
+        }
+
+        false
+    }
+
+    fn is_admin(&self, prefix: &IrcPrefix) -> bool {
+        for admin_str in &self.config.admins {
+            let admin = ":".to_owned() + admin_str;
+            let admin_prefix: IrcPrefix = admin.as_str().into();
+
+            if (admin_prefix.nick == prefix.nick || admin_prefix.nick == "*")
+                && (admin_prefix.user == prefix.user || admin_prefix.user == Some("*"))
+                && (admin_prefix.host == prefix.host || admin_prefix.host == Some("*"))
+            {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    pub fn into_message<'a>(&self, line: &'a str) -> IrcMessage<'a> {
+        let mut message: IrcMessage = line.into();
+
+        if let Some(prefix) = &mut message.prefix {
+            if self.is_owner(prefix) {
+                prefix.kind = IrcPrefixKind::Owner;
+            } else if self.is_admin(prefix) {
+                prefix.kind = IrcPrefixKind::Admin;
+            }
+        }
+
+        message
     }
 
     pub async fn handle_commands(&mut self, mut lines: VecDeque<String>) {
@@ -501,7 +422,8 @@ impl Irc {
 
             trace!("<< {:?}", line);
 
-            let message: IrcMessage = line.into();
+            let message = self.into_message(line);
+
             self.handle_message(&message).await;
         }
     }
@@ -548,26 +470,115 @@ impl Irc {
         }
     }
 
+    pub async fn register(&mut self) {
+        info!(
+            "Registering as {}!{} ({})",
+            self.config.nick, self.config.user, self.config.real
+        );
+        let mut context = self.context.write().await;
+
+        context.queue(&format!(
+            "USER {} 0 * {}",
+            self.config.user, self.config.real
+        ));
+        context.nick(&self.config.nick);
+    }
+
+    pub async fn identify(&mut self) {
+        if self.config.nickserv_pass.is_none() || self.identified {
+            return;
+        }
+
+        self.context.write().await.privmsg(
+            "NickServ",
+            &format!("IDENTIFY {}", self.config.nickserv_pass.as_ref().unwrap()),
+        );
+    }
+
+    pub async fn run_system<'a>(
+        &mut self,
+        prefix: &'a IrcPrefix<'a>,
+        channel: &'a str,
+        arguments: &'a [&'a str],
+        name: &str,
+    ) -> Response {
+        let system = self.systems.get_mut(name).unwrap();
+        system.run(
+            prefix,
+            channel,
+            arguments,
+            &mut *self.context.write().await,
+            &mut *self.factory.write().await,
+        )
+    }
+
+    pub async fn run_default_system<'a>(
+        &mut self,
+        prefix: &'a IrcPrefix<'a>,
+        channel: &'a str,
+        arguments: &'a [&'a str],
+    ) -> Response {
+        if self.invalid_system.is_none() {
+            return Response::Empty;
+        }
+
+        self.default_system.as_mut().unwrap().run(
+            prefix,
+            channel,
+            arguments,
+            &mut *self.context.write().await,
+            &mut *self.factory.write().await,
+        )
+    }
+
+    pub async fn run_invalid_system<'a>(
+        &mut self,
+        prefix: &'a IrcPrefix<'a>,
+        channel: &'a str,
+        arguments: &'a [&'a str],
+    ) -> Response {
+        if self.invalid_system.is_none() {
+            return Response::Empty;
+        }
+
+        self.invalid_system.as_mut().unwrap().run(
+            prefix,
+            channel,
+            arguments,
+            &mut *self.context.write().await,
+            &mut *self.factory.write().await,
+        )
+    }
+
+    pub async fn run_interval_tasks(&mut self) {
+        for (duration, mut task) in std::mem::take(&mut self.tasks) {
+            let fact = self.factory.clone();
+            let ctx = self.context.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(duration).await;
+                    task.run(
+                        &IrcPrefix::default(),
+                        "",
+                        &[],
+                        &mut *ctx.write().await,
+                        &mut *fact.write().await,
+                    );
+                }
+            });
+        }
+    }
+
     pub async fn run(&mut self) -> std::io::Result<()> {
         self.connect().await?;
         info!("Ready!");
-        let (tx, mut rx) = mpsc::channel::<Response>(512);
-        {
-            let mut context = self.context.write().await;
-            context.register();
-            context.run_interval_tasks(tx).await;
-        }
+        self.register().await;
+
+        self.run_interval_tasks().await;
 
         let stream = self.stream.take().unwrap();
 
         let (mut reader, mut writer) = tokio::io::split(stream);
-
-        let cloned_ctx = self.context.clone();
-        tokio::spawn(async move {
-            loop {
-                handle_rx(&mut rx, &cloned_ctx).await;
-            }
-        });
 
         let cloned_ctx = self.context.clone();
         tokio::spawn(async move {
@@ -583,23 +594,9 @@ impl Irc {
     }
 }
 
-async fn handle_rx(rx: &mut mpsc::Receiver<Response>, arc_context: &RwLock<Context>) {
-    while let Some(response) = rx.recv().await {
-        let mut context = arc_context.write().await;
-
-        let Response::Data(data) = response else {
-            continue;
-        };
-
-        for line in data.data {
-            context.privmsg_all(&line);
-        }
-    }
-}
-
 async fn send<T: AsyncWrite>(
     writer: &mut WriteHalf<T>,
-    arc_context: &RwLock<Context>,
+    arc_context: &RwLock<IrcContext>,
 ) -> std::io::Result<()> {
     let mut len;
     {

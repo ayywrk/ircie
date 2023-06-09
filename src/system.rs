@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use crate::{factory::Factory, format::Msg, IrcPrefix};
+use crate::{factory::Factory, format::Msg, IrcContext, IrcPrefix};
 
 pub struct FunctionSystem<Input, F> {
     f: F,
@@ -8,7 +8,14 @@ pub struct FunctionSystem<Input, F> {
 }
 
 pub trait System {
-    fn run(&mut self, prefix: &IrcPrefix, arguments: &[&str], factory: &mut Factory) -> Response;
+    fn run(
+        &mut self,
+        prefix: &IrcPrefix,
+        channel: &str,
+        arguments: &[&str],
+        context: &mut IrcContext,
+        factory: &mut Factory,
+    ) -> Response;
 }
 
 pub trait IntoSystem<Input> {
@@ -29,7 +36,7 @@ macro_rules! impl_system {
                     FnMut( $($params),* ) -> R +
                     FnMut( $(<$params as SystemParam>::Item<'b>),* ) -> R
         {
-            fn run(&mut self, prefix: &IrcPrefix, arguments: &[&str], factory: &mut Factory) -> Response {
+            fn run(&mut self, prefix: &IrcPrefix, channel: &str, arguments: &[&str], context: &mut IrcContext, factory: &mut Factory) -> Response {
                 fn call_inner<'a, R: IntoResponse, $($params),*>(
                     mut f: impl FnMut($($params),*) -> R,
                     $($params: $params),*
@@ -42,7 +49,7 @@ macro_rules! impl_system {
                         return Response::InvalidArgument;
                     }
 
-                    let $params = $params::retrieve(prefix, arguments, &factory);
+                    let $params = $params::retrieve(prefix, channel, arguments, &context, &factory);
 
                 )*
 
@@ -116,7 +123,9 @@ pub(crate) trait SystemParam {
     type Item<'new>;
     fn retrieve<'r>(
         prefix: &'r IrcPrefix,
+        channel: &'r str,
         arguments: &'r [&'r str],
+        context: &'r IrcContext,
         factory: &'r Factory,
     ) -> Self::Item<'r>;
     #[allow(unused_variables)]
