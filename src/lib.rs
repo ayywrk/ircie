@@ -1,3 +1,4 @@
+pub mod context;
 pub mod events;
 pub mod factory;
 pub mod format;
@@ -17,9 +18,10 @@ use std::{
 };
 
 use async_native_tls::TlsStream;
+use context::IrcContext;
 use factory::Factory;
 use irc_command::IrcCommand;
-use log::{debug, info, trace, warn};
+use log::{info, trace, warn};
 use serde::{Deserialize, Serialize};
 use system::{IntoSystem, Response, StoredSystem, System};
 use tokio::{
@@ -174,52 +176,6 @@ pub struct IrcConfig {
     flood_interval: f32,
     owner: String,
     admins: Vec<String>,
-}
-
-// TODO:
-/*
-   split Irc into two structs, one for the context, which is Send + Sync to be usable in tasks
-   one for the comms.
-
-*/
-
-pub struct IrcContext {
-    send_queue: VecDeque<String>,
-}
-
-impl IrcContext {
-    pub fn privmsg(&mut self, channel: &str, message: &str) {
-        debug!("sending privmsg to {} : {}", channel, message);
-        self.queue(&format!("PRIVMSG {} :{}", channel, message));
-    }
-    fn queue(&mut self, msg: &str) {
-        let mut msg = msg.replace("\r", "").replace("\n", "");
-
-        if msg.len() > MAX_MSG_LEN - "\r\n".len() {
-            let mut i = 0;
-
-            while i < msg.len() {
-                let max = (MAX_MSG_LEN - "\r\n".len()).min(msg[i..].len());
-
-                let mut m = msg[i..(i + max)].to_owned();
-                m = m + "\r\n";
-                self.send_queue.push_back(m);
-                i += MAX_MSG_LEN - "\r\n".len()
-            }
-        } else {
-            msg = msg + "\r\n";
-            self.send_queue.push_back(msg);
-        }
-    }
-
-    pub fn join(&mut self, channel: &str) {
-        info!("Joining {channel}");
-        self.queue(&format!("JOIN {}", channel));
-    }
-
-    pub fn nick(&mut self, nick: &str) {
-        self.queue(&format!("NICK {}", nick));
-    }
 }
 
 pub trait AsyncReadWrite: AsyncRead + AsyncWrite + Send + Unpin {}
