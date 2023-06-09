@@ -194,6 +194,7 @@ pub struct Irc {
     default_system: Option<StoredSystem>,
     invalid_system: Option<StoredSystem>,
     systems: HashMap<String, StoredSystem>,
+    event_systems: HashMap<IrcCommand, StoredSystem>,
     tasks: Vec<(Duration, StoredSystem)>,
     factory: Arc<RwLock<Factory>>,
 }
@@ -220,6 +221,7 @@ impl Irc {
             default_system: None,
             invalid_system: None,
             systems: HashMap::default(),
+            event_systems: HashMap::default(),
             tasks: Vec::new(),
             factory: Arc::new(RwLock::new(Factory::default())),
         })
@@ -232,6 +234,16 @@ impl Irc {
     ) -> &mut Self {
         self.systems
             .insert(name.to_owned(), Box::new(system.into_system()));
+        self
+    }
+
+    pub async fn add_event_system<I, S: for<'a> System + Send + Sync + 'static>(
+        &mut self,
+        evt: IrcCommand,
+        system: impl for<'a> IntoSystem<I, System = S>,
+    ) -> &mut Self {
+        self.event_systems
+            .insert(evt, Box::new(system.into_system()));
         self
     }
 
@@ -385,6 +397,7 @@ impl Irc {
     }
 
     async fn handle_message<'a>(&mut self, message: &'a IrcMessage<'a>) {
+        self.run_event_system(message).await;
         match message.command {
             IrcCommand::PING => self.event_ping(&message.parameters[0]).await,
             IrcCommand::RPL_WELCOME => self.event_welcome(&message.parameters[1..].join(" ")).await,
@@ -466,6 +479,18 @@ impl Irc {
             &mut *self.context.write().await,
             &mut *self.factory.write().await,
         )
+    }
+
+    pub async fn run_event_system<'a>(&mut self, message: &'a IrcMessage<'a>) {
+        let Some(system) = self.event_systems.get_mut(&message.command) else { return; };
+
+        system.run(
+            &message.prefix.clone().unwrap_or_default(),
+            "",
+            &message.parameters,
+            &mut *self.context.write().await,
+            &mut *self.factory.write().await,
+        );
     }
 
     pub async fn run_default_system<'a>(

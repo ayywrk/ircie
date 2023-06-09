@@ -6,7 +6,7 @@ macro_rules! make_irc_command_enum {
 
     ($($variant:ident: $value:expr),+) => {
         #[allow(non_camel_case_types)]
-        #[derive(Debug)]
+        #[derive(Debug, PartialEq, Eq, Hash)]
         pub enum IrcCommand {
             UNKNOWN,
             $($variant),+

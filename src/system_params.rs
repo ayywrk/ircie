@@ -137,6 +137,7 @@ impl<'a> SystemParam for Channel<'a> {
     }
 }
 
+#[derive(Debug)]
 pub struct AnyArguments<'a>(&'a [&'a str]);
 
 impl<'a> Deref for AnyArguments<'a> {

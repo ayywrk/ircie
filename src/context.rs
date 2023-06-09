@@ -45,4 +45,8 @@ impl IrcContext {
     pub fn mode(&mut self, channel: &str, modes: &str) {
         self.queue(&format!("MODE {} {}", channel, modes))
     }
+
+    pub fn who(&mut self, channel: &str) {
+        self.queue(&format!("WHO {}", channel))
+    }
 }
