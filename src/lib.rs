@@ -651,8 +651,11 @@ async fn recv<T: AsyncRead>(
 
     let buf = &buf[..bytes_read];
 
-    *partial_line += String::from_utf8_lossy(buf).into_owned().as_str();
-    let new_lines: Vec<&str> = partial_line.split("\r\n").collect();
+    let buf_str: String =
+        partial_line.to_owned() + String::from_utf8_lossy(buf).into_owned().as_str();
+    *partial_line = String::new();
+
+    let new_lines: Vec<&str> = buf_str.split("\r\n").collect();
     let len = new_lines.len();
 
     for (index, line) in new_lines.into_iter().enumerate() {
