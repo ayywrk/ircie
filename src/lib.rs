@@ -640,13 +640,15 @@ async fn recv<T: AsyncRead>(
     let len = new_lines.len();
 
     for (index, line) in new_lines.into_iter().enumerate() {
+        if buf.len() < 2 {
+            continue;
+        }
         if index == len - 1 && &buf[buf.len() - 2..] != b"\r\n" {
             *partial_line = line.to_owned();
             break;
         }
-        if line.len() != 0 {
-            lines.push(line.to_owned());
-        }
+
+        lines.push(line.to_owned());
     }
     Ok(lines)
 }
