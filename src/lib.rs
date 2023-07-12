@@ -93,7 +93,7 @@ impl<'a> IrcPrefix<'a> {
     }
 
     pub fn admin(&self) -> bool {
-        self.kind == IrcPrefixKind::Admin
+        self.kind == IrcPrefixKind::Admin || self.kind == IrcPrefixKind::Owner
     }
 }
 
